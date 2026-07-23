@@ -1,0 +1,15 @@
+Privacy Policy
+
+This policy describes how we collect, use, and protect your personal information when you use our website and services.
+
+Information we collect: We collect information you provide directly, such as your name, email address, shipping address, and payment details when you create an account or place an order. We also automatically collect certain information such as your IP address, browser type, and browsing behavior on our site through cookies.
+
+How we use your information: We use your information to process orders, provide customer support, send order updates, and, with your consent, send marketing communications. We may also use aggregated, anonymized data to improve our website and services.
+
+Data sharing: We do not sell your personal information to third parties. We share information only with service providers who help us operate our business, such as payment processors and shipping carriers, and only to the extent necessary for them to perform their services.
+
+Data security: We use industry-standard encryption (SSL) to protect data transmitted through our website. Payment card information is never stored on our servers directly; it is handled by our PCI-compliant payment processor.
+
+Your rights: You have the right to access, correct, or delete your personal information at any time by contacting our support team or through your account settings. You may also opt out of marketing communications at any time.
+
+Cookies: We use cookies to remember your preferences, keep you logged in, and analyze site traffic. You can disable cookies in your browser settings, though this may affect site functionality.

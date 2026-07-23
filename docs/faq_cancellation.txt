@@ -1,0 +1,16 @@
+Frequently Asked Questions - Order Cancellation
+
+Q: Can I cancel my order?
+A: Orders can be cancelled within 1 hour of placing them, as long as they have not yet entered processing.
+
+Q: How do I cancel an order?
+A: Go to your order history, select the order, and click "Cancel Order." If the option is not available, the order has already begun processing.
+
+Q: What happens if I cancel after processing has started?
+A: If processing has already started, you will need to wait for the item to ship and then return it using our standard return process.
+
+Q: Will I be charged if I cancel?
+A: No, if the cancellation is successful before processing, you will not be charged and no refund is necessary since payment is not captured until shipment.
+
+Q: Can I change my order instead of cancelling?
+A: Yes, within the same 1-hour window you can modify quantities, sizes, or shipping address by contacting support.
