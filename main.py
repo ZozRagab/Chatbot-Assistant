@@ -31,29 +31,29 @@ combine_prompt = ChatPromptTemplate.from_template(combine_template)
 combine_chain = combine_prompt | llm | StrOutputParser()
 
 
-def answer(question: str) -> str:
-    """Main entry point. Routes the question and returns a final answer."""
+def answer(question: str, customer_id: int | None = None) -> tuple[str, str]:
+    """Main entry point. Routes the question and returns (route, final_answer)."""
     category = route_question(question)
 
     if category == "sql":
-        return answer_sql_question(question)
+        return category, answer_sql_question(question, customer_id)
 
     elif category == "vector":
-        return answer_vector_question(question)
+        return category, answer_vector_question(question)
 
     elif category == "both":
-        sql_answer = answer_sql_question(question)
+        sql_answer = answer_sql_question(question, customer_id)
         vector_answer = answer_vector_question(question)
         final = combine_chain.invoke({
             "question": question,
             "sql_answer": sql_answer,
             "vector_answer": vector_answer
         })
-        return final
+        return category, final
 
     else:
         # fallback in case the router returns something unexpected
-        return answer_vector_question(question)
+        return category, answer_vector_question(question)
 
 
 if __name__ == "__main__":
@@ -64,6 +64,7 @@ if __name__ == "__main__":
     ]
 
     for q in test_questions:
+        route, response_text = answer(q)
         print(f"\nQ: {q}")
-        print(f"Route: {route_question(q)}")
-        print(f"A: {answer(q)}")
+        print(f"Route: {route}")
+        print(f"A: {response_text}")

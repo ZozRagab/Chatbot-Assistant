@@ -75,3 +75,12 @@ class Inventory(Base):
 if __name__ == "__main__":
     Base.metadata.create_all(engine)
     print("Tables created successfully: products, customers, orders, order_items, inventory")
+
+
+def get_db():
+    """FastAPI dependency - yields a DB session and ensures it's closed after use."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

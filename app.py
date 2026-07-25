@@ -3,7 +3,6 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from schemas import QuestionRequest, AnswerResponse
-from router import route_question
 from main import answer
 from auth import create_token, get_current_user
 from models import get_db, Customer
@@ -43,8 +42,7 @@ def login(
 @app.post("/chat", response_model=AnswerResponse)
 def chat(request: QuestionRequest, current_customer: Customer = Depends(get_current_user)):
     question = request.question
-    route = route_question(question)
-    response_text = answer(question)  # current_customer.id available here for future SQL scoping
+    route, response_text = answer(question, customer_id=current_customer.id)
 
     return AnswerResponse(
         question=question,

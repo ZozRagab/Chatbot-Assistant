@@ -13,17 +13,29 @@ llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
 # ============================================
 adaptive_template = """Classify what kind of approach this question needs.
 
-- "no_retrieval" - the question is generic chit-chat, a greeting, or something
-  answerable without looking anything up (e.g. "hello", "thank you")
 - "simple" - a single, straightforward document lookup will answer this well
   (most FAQ-style questions: shipping times, payment methods, basic product info)
 - "careful" - the question is about something where getting it exactly right matters,
   is ambiguous, or touches policy details where a wrong/incomplete answer could
   mislead the customer (e.g. returns, refunds, warranty, eligibility questions)
 
+Examples:
+Question: "How long does shipping take?"
+Category: simple
+
+Question: "If I return a gift, do I get cash back or store credit?"
+Category: careful
+
+Question: "What payment methods do you accept?"
+Category: simple
+
+Question: "I ordered a jacket, can I still return it for a full refund?"
+Category: careful
+
+Now classify this question.
 Question: {question}
 
-Respond with only one word: no_retrieval, simple, or careful."""
+Respond with only one word: simple or careful."""
 
 adaptive_prompt = ChatPromptTemplate.from_template(adaptive_template)
 adaptive_chain = adaptive_prompt | llm | StrOutputParser()
@@ -80,13 +92,7 @@ def rewrite_query(question: str) -> str:
 def adaptive_corrective_answer(question: str) -> str:
     strategy = classify_strategy(question)
 
-    if strategy == "no_retrieval":
-        direct_chain = ChatPromptTemplate.from_template(
-            "Respond naturally to this message: {question}"
-        ) | llm | StrOutputParser()
-        return direct_chain.invoke({"question": question})
-
-    elif strategy == "simple":
+    if strategy == "simple":
         return answer_question(question)
 
     else:  # "careful" - full grade-and-retry loop
@@ -94,14 +100,29 @@ def adaptive_corrective_answer(question: str) -> str:
         top_chunks = retrieved_chunks[:5]
 
         # grade each chunk
-        relevant_chunks = [c for c in top_chunks if grade_chunk(question, c.page_content)]
+        print("  [Grading initial retrieval...]")
+        relevant_chunks = []
+        for c in top_chunks:
+            is_relevant = grade_chunk(question, c.page_content)
+            preview = c.page_content[:60].replace("\n", " ")
+            print(f"    - '{preview}...' -> {'RELEVANT' if is_relevant else 'NOT relevant'}")
+            if is_relevant:
+                relevant_chunks.append(c)
 
         if not relevant_chunks:
-            # correction: rewrite the query and retry retrieval ONCE
+            print("  [No relevant chunks found - rewriting query and retrying...]")
             new_question = rewrite_query(question)
+            print(f"  [Rewritten query: '{new_question}']")
             retrieved_chunks = fusion_retrieval_chain.invoke({"question": new_question})
             top_chunks = retrieved_chunks[:5]
-            relevant_chunks = [c for c in top_chunks if grade_chunk(question, c.page_content)]
+            print("  [Grading retry retrieval...]")
+            relevant_chunks = []
+            for c in top_chunks:
+                is_relevant = grade_chunk(question, c.page_content)
+                preview = c.page_content[:60].replace("\n", " ")
+                print(f"    - '{preview}...' -> {'RELEVANT' if is_relevant else 'NOT relevant'}")
+                if is_relevant:
+                    relevant_chunks.append(c)
 
         if not relevant_chunks:
             return "I don't have enough reliable information to answer that confidently."
@@ -112,9 +133,10 @@ def adaptive_corrective_answer(question: str) -> str:
 
 if __name__ == "__main__":
     test_questions = [
-        "hello!",                                                    # no_retrieval
         "How long does shipping take?",                               # simple
         "If I return a gift, do I get cash back or store credit?",    # careful
+        "What payment methods do you accept?",                        # simple
+        "Can I still get my money if the tags fell off by accident?", # careful, awkward phrasing - designed to stress the grading/retry loop
     ]
 
     for q in test_questions:
