@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, status, Depends
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-
+from pipeline import answer_question as plain_vector_answer
 from schemas import QuestionRequest, AnswerResponse
 from main import answer
 from auth import create_token, get_current_user
@@ -49,3 +49,16 @@ def chat(request: QuestionRequest, current_customer: Customer = Depends(get_curr
         route=route,
         answer=response_text
     )
+
+
+
+
+
+
+
+
+
+
+
+
+

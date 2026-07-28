@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_groq import ChatGroq
+from product_index import find_likely_products
 
 load_dotenv()
 
@@ -18,6 +19,17 @@ Tables:
 
 products(id, name, category, price)
     - one row per product
+    - Customers often refer to products by generic category words ("laptop",
+      "the phone I ordered") rather than the exact product name. A list of
+      likely actual product names for this specific question is provided
+      separately below (under "Likely referenced products") - you MUST use
+      those exact names when filtering by product, NOT the generic word
+      from the question itself.
+    - Customers often refer to products by generic category words ("laptop",
+      "the phone I ordered") rather than the exact product name. A list of
+      likely actual product names for this specific question is provided
+      separately below (under "Likely referenced products") - use those
+      exact names when filtering, not the generic word from the question.
 
 customers(id, name, email, hashed_password)
     - one row per customer
@@ -69,11 +81,18 @@ a different customer's name under any circumstance.
 If the question is about general product/inventory info unrelated to any specific
 customer, this restriction does not apply.
 
-IMPORTANT: When filtering by product name or any other text field based on a casual
-or partial mention in the question (e.g. the user says "jacket" but the actual product
-name is "Summit Insulated Winter Jacket"), use case-insensitive partial matching with
-ILIKE and % wildcards (e.g. p.name ILIKE '%jacket%'), NOT an exact equality match (=).
-Exact string matches will almost always fail to find real data.
+IMPORTANT: When filtering by product name, use case-insensitive partial matching
+with ILIKE and % wildcards (e.g. p.name ILIKE '%AeroBook%'), NOT an exact
+equality match (=). Exact string matches will almost always fail.
+
+Likely referenced products for this specific question (found via semantic
+search, may be empty if the question isn't about a specific product):
+{likely_products}
+
+If this list is non-empty, you MUST use one of these exact product names in
+your ILIKE filter - do NOT use a generic word taken directly from the question
+(e.g. do not use '%laptop%' if "AeroBook Pro 14" is listed above; use
+'%AeroBook%' instead).
 
 Question: {question}
 
@@ -87,10 +106,14 @@ sql_generation_chain = sql_prompt | llm | StrOutputParser()
 def generate_sql(question: str, customer_id: int | None) -> str:
     """Generates a SQL query string from a natural language question,
     scoped to the given customer_id if provided."""
+    likely_products = find_likely_products(question)
+    likely_products_text = ", ".join(likely_products) if likely_products else "(none found)"
+
     raw_output = sql_generation_chain.invoke({
         "schema": SCHEMA_DESCRIPTION,
         "question": question,
-        "customer_id": customer_id if customer_id is not None else "UNKNOWN (not logged in)"
+        "customer_id": customer_id if customer_id is not None else "UNKNOWN (not logged in)",
+        "likely_products": likely_products_text
     })
     # clean up in case the model adds markdown formatting despite instructions
     cleaned = raw_output.strip().strip("`").replace("sql\n", "", 1).strip()
