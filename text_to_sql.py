@@ -1,10 +1,10 @@
 import os
+import re
 import psycopg2
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_groq import ChatGroq
-from product_index import find_likely_products
 
 load_dotenv()
 
@@ -20,16 +20,10 @@ Tables:
 products(id, name, category, price)
     - one row per product
     - Customers often refer to products by generic category words ("laptop",
-      "the phone I ordered") rather than the exact product name. A list of
-      likely actual product names for this specific question is provided
-      separately below (under "Likely referenced products") - you MUST use
-      those exact names when filtering by product, NOT the generic word
-      from the question itself.
-    - Customers often refer to products by generic category words ("laptop",
-      "the phone I ordered") rather than the exact product name. A list of
-      likely actual product names for this specific question is provided
-      separately below (under "Likely referenced products") - use those
-      exact names when filtering, not the generic word from the question.
+      "the phone I ordered") rather than the exact product name. The caller
+      (the agent) resolves this ahead of time and passes the exact product
+      name(s) separately - use those exact names when filtering, not any
+      generic word that might appear in the question itself.
 
 customers(id, name, email, hashed_password)
     - one row per customer
@@ -57,8 +51,17 @@ inventory(id, product_id, size, color, qty)
     - size/color can be NULL for products without variants
 """
 
+
+def _format_resolved_products(resolved_product_names: list[str] | None) -> str:
+    """Turns a list of resolved product names (or None) into the plain-text
+    form inserted into the prompt."""
+    if not resolved_product_names:
+        return "None"
+    return ", ".join(resolved_product_names)
+
+
 # ============================================
-# Text-to-SQL prompt
+# CUSTOMER-SPECIFIC text-to-SQL (scoped to one authenticated customer)
 # ============================================
 sql_template = """You are a PostgreSQL expert. Given the database schema below,
 write a single, safe, READ-ONLY SQL query (SELECT only - never INSERT, UPDATE, DELETE, or DROP)
@@ -78,44 +81,43 @@ customer_id is 1 (not Omar's id), you must still scope the query to customer_id 
 only, ignoring the name mentioned in the question. Do not look up or filter by
 a different customer's name under any circumstance.
 
-If the question is about general product/inventory info unrelated to any specific
-customer, this restriction does not apply.
-
 IMPORTANT: When filtering by product name, use case-insensitive partial matching
 with ILIKE and % wildcards (e.g. p.name ILIKE '%AeroBook%'), NOT an exact
 equality match (=). Exact string matches will almost always fail.
 
-Likely referenced products for this specific question (found via semantic
-search, may be empty if the question isn't about a specific product):
-{likely_products}
+Resolved exact product name(s) for this question (already identified by the
+caller from the customer's real order history - will say "None" if the
+question isn't about a specific product). If MORE THAN ONE name is listed,
+it means the casual reference was ambiguous - use = ANY(array) matching
+against all of them, and let ORDER BY / LIMIT resolve which one is actually
+correct (e.g. "the LAST one I ordered" -> ORDER BY o.order_date DESC LIMIT 1):
+{resolved_product_names}
 
-If this list is non-empty, you MUST use one of these exact product names in
-your ILIKE filter - do NOT use a generic word taken directly from the question
-(e.g. do not use '%laptop%' if "AeroBook Pro 14" is listed above; use
-'%AeroBook%' instead).
+If resolved name(s) are given above (not "None"), you MUST use them in your
+filter - do NOT use a generic word taken directly from the question (e.g. do
+not use '%laptop%' if "AeroBook Pro 14" was resolved above; use '%AeroBook%' instead).
 
 Question: {question}
 
 Respond with ONLY the raw SQL query. No explanation, no markdown formatting, no backticks."""
 
 sql_prompt = ChatPromptTemplate.from_template(sql_template)
-
 sql_generation_chain = sql_prompt | llm | StrOutputParser()
 
 
-def generate_sql(question: str, customer_id: int | None) -> str:
-    """Generates a SQL query string from a natural language question,
-    scoped to the given customer_id if provided."""
-    likely_products = find_likely_products(question)
-    likely_products_text = ", ".join(likely_products) if likely_products else "(none found)"
-
+def generate_sql(question: str, resolved_product_names: list[str] | None = None, customer_id: int | None = None) -> str:
+    """Generates a customer-scoped SQL query string from a natural language
+    question. resolved_product_names should be the exact product name(s)
+    already identified by the caller (e.g. via get_all_ordered_products_names
+    + the agent's own reasoning) - pass more than one if the casual reference
+    was ambiguous between several real products; this function no longer
+    resolves casual product references itself."""
     raw_output = sql_generation_chain.invoke({
         "schema": SCHEMA_DESCRIPTION,
         "question": question,
         "customer_id": customer_id if customer_id is not None else "UNKNOWN (not logged in)",
-        "likely_products": likely_products_text
+        "resolved_product_names": _format_resolved_products(resolved_product_names)
     })
-    # clean up in case the model adds markdown formatting despite instructions
     cleaned = raw_output.strip().strip("`").replace("sql\n", "", 1).strip()
     return cleaned
 
@@ -139,25 +141,17 @@ def is_properly_scoped(query: str, customer_id: int | None) -> bool:
     )
 
     if not touches_customer_data:
-        return True  # general product/inventory queries don't need scoping
+        return True
 
     if customer_id is None:
-        # question touches customer-linked data but nobody is authenticated - refuse
         return False
 
     if str(customer_id) not in normalized:
         return False
 
-    # Reject any use of OR when the query touches customer-scoped tables -
-    # a correctly scoped single-customer query should never need to OR together
-    # multiple conditions that could pull in another customer's data.
     if " or " in normalized:
         return False
 
-    # Additional guard specifically for the customers table: even with the
-    # customer's own id present, block queries that select multiple customers'
-    # worth of data (e.g. no LIMIT, or selecting from customers without an
-    # id/email equality filter tied to this specific customer_id).
     if "customers" in normalized and "limit 1" not in normalized and f"id = {customer_id}" not in normalized and f"id={customer_id}" not in normalized:
         return False
 
@@ -176,8 +170,8 @@ def is_safe_query(query: str) -> bool:
 
 
 def execute_sql(query: str, customer_id: int | None):
-    """Executes a SQL query against Postgres and returns the results.
-    Refuses to run anything touching order data that isn't properly
+    """Executes a customer-scoped SQL query against Postgres and returns the
+    results. Refuses to run anything touching order data that isn't properly
     scoped to the authenticated customer."""
     if not is_safe_query(query):
         return None, "Query rejected: only SELECT statements are allowed."
@@ -186,6 +180,12 @@ def execute_sql(query: str, customer_id: int | None):
         print(f"  [DEBUG] Query REJECTED by scoping check: {query!r}")
         return None, "Query rejected: this request requires authentication and could not be safely scoped to your account."
 
+    return _run_query(query)
+
+
+def _run_query(query: str):
+    """Shared low-level execution, used by both the customer-scoped and
+    general-query paths, once each has passed its own safety checks."""
     db_url = (
         f"dbname={os.getenv('DATABASE_NAME')} "
         f"user={os.getenv('DATABASE_USERNAME')} "
@@ -193,7 +193,6 @@ def execute_sql(query: str, customer_id: int | None):
         f"host={os.getenv('DATABASE_HOSTNAME')} "
         f"port={os.getenv('DATABASE_PORT')}"
     )
-
     try:
         conn = psycopg2.connect(db_url)
         cursor = conn.cursor()
@@ -206,8 +205,6 @@ def execute_sql(query: str, customer_id: int | None):
     except Exception as e:
         return None, f"Query execution failed: {e}"
 
-
-import re
 
 # Word-boundary regex matching on core action VERBS, not rigid exact phrases.
 # This catches "cancel my last order", "please cancel it", etc. - not just
@@ -234,24 +231,11 @@ def has_destructive_intent(question: str) -> bool:
     return any(re.search(pattern, normalized) for pattern in DESTRUCTIVE_INTENT_PATTERNS)
 
 
-def answer_sql_question(question: str, customer_id: int | None = None) -> str:
-    """Full pipeline: question -> generated SQL -> executed -> plain-language answer.
-    customer_id should be the authenticated user's id, or None if not logged in."""
-    if has_destructive_intent(question):
-        return ("I'm a read-only assistant and can't delete, cancel, or modify orders. "
-                "Please contact customer support directly for that request.")
-
-    query = generate_sql(question, customer_id)
-    result, error = execute_sql(query, customer_id)
-
-    if error:
-        return f"Sorry, I couldn't retrieve that information. ({error})"
-
-    if not result["rows"]:
-        return "No matching records were found."
-
-    # format results as plain text for the LLM to summarize
-    formatted_rows = "\n".join(str(dict(zip(result["columns"], row))) for row in result["rows"])
+def _summarize(question: str, rows_result: dict, customer_id: int | None) -> str:
+    """Shared summarization step for the customer-scoped path - explicitly
+    aware of the authenticated identity so it never misattributes results
+    to a different named person mentioned in the question."""
+    formatted_rows = "\n".join(str(dict(zip(rows_result["columns"], row))) for row in rows_result["rows"])
 
     summarize_template = """Given this question and the raw database results below,
 answer the question in a natural, friendly sentence.
@@ -272,23 +256,185 @@ Answer:"""
     summarize_prompt = ChatPromptTemplate.from_template(summarize_template)
     summarize_chain = summarize_prompt | llm | StrOutputParser()
 
-    answer = summarize_chain.invoke({
+    return summarize_chain.invoke({
         "question": question,
         "results": formatted_rows,
         "customer_id": customer_id if customer_id is not None else "N/A"
     })
-    return answer
+
+
+def answer_sql_specific_question(question: str, resolved_product_names: list[str] | None = None, customer_id: int | None = None) -> str:
+    """Full customer-scoped pipeline: question -> generated SQL -> executed
+    -> plain-language answer. customer_id must be the authenticated user's
+    real id (never trusted from anywhere else). resolved_product_names should
+    be the exact product name(s) already identified by the caller, if the
+    question references a specific product."""
+    if has_destructive_intent(question):
+        return ("I'm a read-only assistant and can't delete, cancel, or modify orders. "
+                "Please contact customer support directly for that request.")
+
+    query = generate_sql(question, resolved_product_names, customer_id)
+    result, error = execute_sql(query, customer_id)
+
+    if error:
+        return f"Sorry, I couldn't retrieve that information. ({error})"
+
+    if not result["rows"]:
+        return "No matching records were found."
+
+    return _summarize(question, result, customer_id)
+
+
+# ============================================
+# GENERAL / AGGREGATE text-to-SQL (no single customer - store-wide statistics)
+# ============================================
+general_sql_template = """You are a PostgreSQL expert. Given the database schema below,
+write a single, safe, READ-ONLY SQL query (SELECT only - never INSERT, UPDATE, DELETE, or DROP)
+that answers the user's question.
+
+Schema:
+{schema}
+
+IMPORTANT: This is a GENERAL, store-wide question - NOT tied to any specific
+customer. You MUST NOT reference the customers table in any way, and you MUST
+NEVER include customer_id anywhere in the query, not even in a WHERE filter
+or a GROUP BY - not even if the question names a specific person. If the
+question touches orders or order_items, it must be answered as ONE single
+AGGREGATE across ALL customers combined (e.g. COUNT, SUM, AVG) - never a list
+of individual, identifiable rows, and never a per-customer breakdown.
+
+Example: if asked "how much has customer 3 spent" or "what did Sarah order
+the most", these are NOT valid general questions - they ask about one specific
+individual. If you cannot answer a question without filtering to one customer,
+write a query that returns nothing meaningful rather than exposing individual
+data (this tool is only for questions like "what is our best-selling product"
+or "how many orders have we processed in total").
+
+Resolved exact product name(s) for this question, if relevant (already
+identified by the caller - will say "None" if not applicable):
+{resolved_product_names}
+
+Question: {question}
+
+Respond with ONLY the raw SQL query. No explanation, no markdown formatting, no backticks."""
+
+general_sql_prompt = ChatPromptTemplate.from_template(general_sql_template)
+general_sql_generation_chain = general_sql_prompt | llm | StrOutputParser()
+
+
+def generate_general_sql(question: str, resolved_product_names: list[str] | None = None) -> str:
+    """Generates a general, store-wide (non-customer-scoped) SQL query,
+    e.g. for questions like 'what is the most ordered product' or
+    'how many total orders have been placed'."""
+    raw_output = general_sql_generation_chain.invoke({
+        "schema": SCHEMA_DESCRIPTION,
+        "question": question,
+        "resolved_product_names": _format_resolved_products(resolved_product_names)
+    })
+    cleaned = raw_output.strip().strip("`").replace("sql\n", "", 1).strip()
+    return cleaned
+
+
+def is_general_query_safe(query: str) -> bool:
+    """Safety check for the general/aggregate path: the customers table must
+    NEVER appear at all, and any query touching orders/order_items must be a
+    genuine aggregate (contain at least one aggregate function) AND must not
+    filter by any specific customer_id value - never a query returning raw,
+    individually-identifiable rows, and never an aggregate scoped down to
+    one customer (e.g. SUM(...) WHERE customer_id = 3 is still personal,
+    even though it uses an aggregate function - this was a real gap found
+    after building the first version of this check)."""
+    normalized = query.lower()
+
+    if "customers" in normalized:
+        return False
+
+    touches_order_data = "orders" in normalized or "order_items" in normalized
+    if touches_order_data:
+        aggregate_functions = ["count(", "sum(", "avg(", "max(", "min("]
+        if not any(fn in normalized for fn in aggregate_functions):
+            return False
+
+        # An aggregate function alone doesn't guarantee the result isn't
+        # scoped to or broken out by individual customer - explicitly reject
+        # any reference to customer_id at all in this path. Note: GROUP BY
+        # customer_id is NOT an exception here - it would return every
+        # individual customer's own aggregate side by side in one result,
+        # which is arguably worse exposure than a single WHERE filter.
+        if "customer_id" in normalized:
+            return False
+
+    return True
+
+
+def execute_general_sql(query: str):
+    """Executes a general/aggregate SQL query against Postgres. Refuses
+    anything touching the customers table, and refuses non-aggregate queries
+    that touch order data."""
+    if not is_safe_query(query):
+        return None, "Query rejected: only SELECT statements are allowed."
+
+    if not is_general_query_safe(query):
+        print(f"  [DEBUG] General query REJECTED by safety check: {query!r}")
+        return None, "Query rejected: general queries must not access individual customer data and must aggregate order data."
+
+    return _run_query(query)
+
+
+def answer_sql_general_question(question: str, resolved_product_names: list[str] | None = None) -> str:
+    """Full general/store-wide pipeline: question -> generated SQL -> executed
+    -> plain-language answer. Never touches any individual customer's data -
+    use answer_sql_specific_question instead for anything about the logged-in
+    customer's own account."""
+    if has_destructive_intent(question):
+        return ("I'm a read-only assistant and can't delete, cancel, or modify orders. "
+                "Please contact customer support directly for that request.")
+
+    query = generate_general_sql(question, resolved_product_names)
+    result, error = execute_general_sql(query)
+
+    if error:
+        return f"Sorry, I couldn't retrieve that information. ({error})"
+
+    if not result["rows"]:
+        return "No matching records were found."
+
+    formatted_rows = "\n".join(str(dict(zip(result["columns"], row))) for row in result["rows"])
+
+    summarize_template = """Given this question and the raw database results below,
+answer the question in a natural, friendly sentence.
+
+Question: {question}
+
+Database results:
+{results}
+
+Answer:"""
+    summarize_prompt = ChatPromptTemplate.from_template(summarize_template)
+    summarize_chain = summarize_prompt | llm | StrOutputParser()
+
+    return summarize_chain.invoke({"question": question, "results": formatted_rows})
 
 
 if __name__ == "__main__":
-    test_cases = [
-        ("How many AeroBook Pro 14 laptops are in stock?", None),  # general - no auth needed
-        ("What is the status of my last order?", 1),                # scoped to customer 1 (Sarah)
-        ("What is the status of my last order?", None),              # same question, but NOT logged in - should refuse
+    print("--- Customer-specific tests ---")
+    specific_cases = [
+        ("What is the status of my last order?", None, 1),
+        ("Is my laptop under warranty?", ["AeroBook Pro 14"], 2),
+        ("What is the status of my last order?", None, None),  # not logged in - should refuse
     ]
+    for q, products, cid in specific_cases:
+        print(f"\nQ: {q} (customer_id={cid}, resolved_product_names={products})")
+        print("SQL:", generate_sql(q, products, cid))
+        print("A:", answer_sql_specific_question(q, products, cid))
 
-    for q, cid in test_cases:
-        print(f"\nQ: {q} (customer_id={cid})")
-        sql = generate_sql(q, cid)
-        print(f"Generated SQL: {sql}")
-        print(f"A: {answer_sql_question(q, cid)}")
+    print("\n--- General/aggregate tests ---")
+    general_cases = [
+        ("What is the most ordered product?", None),
+        ("How many total orders have been placed across the store?", None),
+        ("How much has customer 3 spent in total?", None),  # adversarial - must be refused, not answered
+    ]
+    for q, products in general_cases:
+        print(f"\nQ: {q}")
+        print("SQL:", generate_general_sql(q, products))
+        print("A:", answer_sql_general_question(q, products))
