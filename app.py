@@ -7,6 +7,7 @@ from main import answer
 from auth import create_token, get_current_user
 from models import get_db, Customer
 from utils import verify_password
+from agent_graph import compiled_graph
 
 # ============================================
 # All the heavy setup (embedding model, ChromaDB connection, LLM clients)
@@ -42,23 +43,23 @@ def login(
 @app.post("/chat", response_model=AnswerResponse)
 def chat(request: QuestionRequest, current_customer: Customer = Depends(get_current_user)):
     question = request.question
-    route, response_text = answer(question, customer_id=current_customer.id)
+
+    config = {
+        "configurable": {
+            "thread_id": f"customer-{current_customer.id}",
+            "customer_id": current_customer.id
+        }
+    }
+
+    result = compiled_graph.invoke(
+        {"messages": [HumanMessage(content=question)]},
+        config=config
+    )
+
+    final_answer = result["messages"][-1].content
 
     return AnswerResponse(
         question=question,
-        route=route,
-        answer=response_text
+        route="agent",
+        answer=final_answer
     )
-
-
-
-
-
-
-
-
-
-
-
-
-
