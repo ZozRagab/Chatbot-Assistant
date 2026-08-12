@@ -29,8 +29,7 @@ retriever = vectorstore.as_retriever(search_kwargs={"k": 3})  # top 3 chunks per
 # Set up the LLM (Groq)
 # ============================================
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    temperature=0
+    model="openai/gpt-oss-20b", temperature=0
 )
 
 # ============================================

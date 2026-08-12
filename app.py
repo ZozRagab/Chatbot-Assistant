@@ -1,20 +1,35 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status, Depends
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from pipeline import answer_question as plain_vector_answer
+from langchain_core.messages import HumanMessage
+from langgraph.checkpoint.postgres import PostgresSaver
+
 from schemas import QuestionRequest, AnswerResponse
-from main import answer
 from auth import create_token, get_current_user
-from models import get_db, Customer
+from models import get_db, User
 from utils import verify_password
-from agent_graph import compiled_graph
+from agent_graph import graph, DB_URI
+
 
 # ============================================
-# All the heavy setup (embedding model, ChromaDB connection, LLM clients)
-# happens ONCE here, at import time - when the server starts.
+# Lifespan: opens the checkpoint database connection ONCE, when the server
+# actually starts, and closes it ONCE, when the server actually shuts down.
 # ============================================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    checkpointer_cm = PostgresSaver.from_conn_string(DB_URI)
+    checkpointer = checkpointer_cm.__enter__()
+    checkpointer.setup()
 
-app = FastAPI(title="Ecommerce RAG Assistant")
+    app.state.compiled_graph = graph.compile(checkpointer=checkpointer)
+
+    yield
+
+    checkpointer_cm.__exit__(None, None, None)
+
+
+app = FastAPI(title="Grocery Ecommerce RAG Assistant", lifespan=lifespan)
 
 
 @app.get("/")
@@ -28,29 +43,30 @@ def login(
     db: Session = Depends(get_db),
 ):
     # username field carries the email in this flow
-    customer = db.query(Customer).filter(Customer.email == form.username).first()
-    if not customer or not verify_password(form.password, customer.hashed_password):
+    user = db.query(User).filter(User.Email == form.username).first()
+    if not user or not verify_password(form.password, user.HashedPassword):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    access_token = create_token({"user_id": customer.id})
+    access_token = create_token({"user_id": user.Id})
     return {"access_token": access_token, "token_type": "bearer"}
 
 
 @app.post("/chat", response_model=AnswerResponse)
-def chat(request: QuestionRequest, current_customer: Customer = Depends(get_current_user)):
+def chat(request: QuestionRequest, current_user: User = Depends(get_current_user)):
     question = request.question
 
     config = {
         "configurable": {
-            "thread_id": f"customer-{current_customer.id}",
-            "customer_id": current_customer.id
+            "thread_id": f"user-{current_user.Id}",
+            "user_id": current_user.Id
         }
     }
 
+    compiled_graph = app.state.compiled_graph
     result = compiled_graph.invoke(
         {"messages": [HumanMessage(content=question)]},
         config=config

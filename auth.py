@@ -47,9 +47,11 @@ def get_current_user(
 
     token_data = verify_access_token(token, credentials_exception)
 
-    customer = db.query(models.Customer).filter(models.Customer.id == token_data.user_id).first()
+    # NOTE: models.User and models.User.Id (capital I) - matching the new
+    # ERD-exact naming used throughout models.py.
+    user = db.query(models.User).filter(models.User.Id == token_data.user_id).first()
 
-    if customer is None:
+    if user is None:
         raise credentials_exception
 
-    return customer
+    return user
