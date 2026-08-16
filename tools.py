@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from langchain_core.tools import tool
 from A_C_rag import adaptive_corrective_answer
 from text_to_sql import answer_sql_specific_question, answer_sql_general_question
-
+from sql_ReAct import c_graph as compiled_graph
 load_dotenv()
 
 
@@ -65,13 +65,21 @@ def user_order_lookup(user_id: int, question: str, resolved_product_names: list[
     """
     return answer_sql_specific_question(question, resolved_product_names, user_id)
 
-
 @tool
-def general_sql_lookup(question: str, resolved_product_names: list[str] | None = None) -> str:
+def general_sql_lookup(question: str, resolved_product_names: list[str] | None = None, page: int = 1) -> dict:
     """Answer a GENERAL, store-wide question about products, categories,
     reviews (by product, not by person), or vouchers - NOT tied to any
     specific user. Use for questions like 'what's our best-selling product',
-    'what's the average rating for X', 'is voucher code SAVE20 still valid'.
+    'what's the average rating for X', 'is voucher code SAVE20 still valid',
+    or 'list all products'.
+
+    PAGINATION: results are paginated, 50 items per page - check "has_more"
+    in the returned dict. Single-fact/aggregate questions (e.g. "most
+    popular product") naturally return has_more=False on page 1. For
+    LIST-style questions ("list all products"), call this ONCE per
+    question, even if has_more is True - do NOT automatically call again
+    for the next page within the same turn. Instead, explicitly tell the
+    customer more results exist and that they can ask to see more.
 
     Do NOT use this for anything about the currently logged-in user's own
     orders/cart/account (use user_order_lookup instead), and NEVER use it to
@@ -81,79 +89,62 @@ def general_sql_lookup(question: str, resolved_product_names: list[str] | None =
     individual user's personal activity; questions like that should be
     refused, not answered through here.
     """
-    return answer_sql_general_question(question, resolved_product_names)
-
-
-@tool
-def get_all_product_names() -> list[str]:
-    """Get the full list of real product names in the store's catalog. Use
-    this FIRST when the customer refers to a product casually (e.g. 'apples',
-    'bread') and you need to identify the exact product name before calling
-    check_stock or get_product_price - match the casual reference against
-    this list yourself, then use the exact matched name(s) in the follow-up
-    call. This is general, catalog-wide data, not tied to any specific user."""
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT DISTINCT "Name" FROM "Product"')
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return [row[0] for row in rows]
-
+    return answer_sql_general_question(question, resolved_product_names, page)
 
 @tool
-def check_stock(resolved_product_names: list[str]) -> dict:
-    """Check current stock quantity for one or more products. You MUST first
-    call get_all_product_names, resolve the customer's casual reference
-    (e.g. 'apples') to the exact real product name(s) yourself, and pass
-    them here - do NOT pass the casual wording directly."""
-    if not resolved_product_names:
-        return {"found": False, "message": "No matching product found."}
+def get_all_product_names(page: int = 1) -> dict:
+    """Get the store's catalog product names - PAGINATED, 50 names per page.
+    Use this FIRST when the customer refers to a product casually (e.g.
+    'apples', 'bread') and you need to identify the exact product name
+    before calling other tools - match the casual reference against the
+    returned names yourself.
+
+    PAGINATION AND SEARCHING ACROSS PAGES:
+    - If you find a confident match on this page, stop - no need to fetch
+    further pages.
+    - If you do NOT find a match on this page AND has_more is True, you
+    MUST call again with page+1 to keep searching - a single empty page
+    does NOT mean the product doesn't exist, since names are spread
+    across multiple pages.
+    - If has_more becomes False and you have STILL found no match after
+    checking every page, tell the customer honestly that you could not
+    find a matching product in the catalog - do NOT guess, substitute
+    an unrelated product, or imply a match exists when it doesn't.
+    """
+    page_size = 50   
+    offset = (page - 1) * page_size
 
     conn = _get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        'SELECT "Name", "StockQuantity" FROM "Product" WHERE "Name" = ANY(%s)',
-        (resolved_product_names,)
+        'SELECT DISTINCT "Name" FROM "Product" ORDER BY "Name" LIMIT %s OFFSET %s',
+        (page_size + 1, offset)
     )
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
 
-    return {
-        "found": True,
-        "products": [{"name": r[0], "stock_quantity": r[1]} for r in rows]
-    }
+    has_more = len(rows) > page_size
+    names = [row[0] for row in rows[:page_size]]
 
+    return {"items": names, "page": page, "has_more": has_more}
 
 @tool
-def get_product_price(resolved_product_names: list[str]) -> dict:
-    """Get the price (and sale price, if any) of one or more products. You
-    MUST first call get_all_product_names, resolve the customer's casual
-    reference (e.g. 'bread') to the exact real product name(s) yourself, and
-    pass them here - do NOT pass the casual wording directly."""
-    if not resolved_product_names:
-        return {"found": False, "message": "No matching product found."}
+def sql_agent_tool(question: str, config: RunnableConfig) -> str:
+    """Delegate a question about products, orders, cart, stock, prices,
+    reviews, or vouchers to the specialized SQL data agent. Use this for
+    ANY question requiring structured store/order data - it handles product
+    name resolution and pagination internally and returns one final answer.
+    Do NOT use this for policy/FAQ/general knowledge questions."""
+    user_id = config["configurable"]["user_id"]
 
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT "Name", "Price", "SalePrice" FROM "Product" WHERE "Name" = ANY(%s)',
-        (resolved_product_names,)
+    sub_config = {"configurable": {"user_id": user_id}}
+
+    result = compiled_graph.invoke(
+        {"messages": [{"role": "user", "content": question}]},
+        config=sub_config
     )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    return {
-        "found": True,
-        "products": [
-            {"name": r[0], "price": float(r[1]), "sale_price": float(r[2]) if r[2] is not None else None}
-            for r in rows
-        ]
-    }
-
-
+    return result["messages"][-1].content
 @tool
 def search_policies_and_faqs(question: str) -> str:
     """Search FAQs, policies, and product descriptions - covers returns,
@@ -163,21 +154,3 @@ def search_policies_and_faqs(question: str) -> str:
     return adaptive_corrective_answer(question)
 
 
-if __name__ == "__main__":
-    # Direct tests - bypass the LLM entirely, just calling the underlying
-    # functions to confirm the SQL/logic itself works before adding the LLM layer.
-    print("get_all_ordered_products_names:", get_all_ordered_products_names.invoke({"user_id": 1}))
-    print("user_order_lookup:", user_order_lookup.invoke({
-        "user_id": 1,
-        "question": "What is the status of my last order?"
-    }))
-    print("general_sql_lookup:", general_sql_lookup.invoke({
-        "question": "What is our best-selling product?"
-    }))
-    print("general_sql_lookup (adversarial):", general_sql_lookup.invoke({
-        "question": "What has user 3 reviewed?"
-    }))
-    print("get_all_product_names:", get_all_product_names.invoke({}))
-    print("check_stock:", check_stock.invoke({"resolved_product_names": ["Apples"]}))
-    print("get_product_price:", get_product_price.invoke({"resolved_product_names": ["Bread"]}))
-    print("search_policies_and_faqs:", search_policies_and_faqs.invoke({"question": "What is your return policy?"}))

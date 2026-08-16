@@ -270,8 +270,11 @@ Schema:
 {schema}
 
 IMPORTANT rules for this GENERAL, non-personal query:
-- NEVER reference "User", "UserAddress", "Orders", "Order_Item", "Cart", or
-  "Cart_Item" in any way.
+- NEVER reference "User", "UserAddress", "Cart", or "Cart_Item" in any way.
+- "Orders" and "Order_Item" CAN be used for legitimate store-wide aggregates
+  (e.g. "most ordered product", "total orders placed", "which category sells
+  the most") - but NEVER join them to "User", and NEVER reference "UserId"
+  anywhere in the query.
 - "Review" is public when browsing by PRODUCT (e.g. average rating, listing
   reviews for an item) - but NEVER filter, group, or select by "UserId" on
   "Review" - that reveals one specific person's review activity.
@@ -280,6 +283,14 @@ IMPORTANT rules for this GENERAL, non-personal query:
   reveals which specific person used which voucher.
 - If you cannot answer without identifying one specific person, do not guess -
   write a query that returns nothing meaningful rather than exposing personal data.
+
+PAGINATION: if the question asks for a LIST or ENUMERATION of multiple items
+(e.g. "list all products", "show me every X"), you MUST include
+LIMIT {limit_value} OFFSET {offset_value} in your query, ordered by a sensible
+column (e.g. name or date). If the question asks for a SINGLE fact, total, or
+aggregate (e.g. "what is the most popular product", "how many total orders
+exist", "what is the average rating"), do NOT add LIMIT/OFFSET - aggregate
+queries naturally return one row regardless of page.
 
 Resolved exact product name(s) for this question, if relevant (will say
 "None" if not applicable):
@@ -293,21 +304,27 @@ general_sql_prompt = ChatPromptTemplate.from_template(general_sql_template)
 general_sql_generation_chain = general_sql_prompt | llm | StrOutputParser()
 
 
-def generate_general_sql(question: str, resolved_product_names: list[str] | None = None) -> str:
+GENERAL_PAGE_SIZE = 50
+
+def generate_general_sql(question: str, resolved_product_names: list[str] | None = None, page: int = 1) -> str:
+    offset_value = (page - 1) * GENERAL_PAGE_SIZE
+    limit_value = GENERAL_PAGE_SIZE + 1
+
     raw_output = general_sql_generation_chain.invoke({
         "schema": SCHEMA_DESCRIPTION,
         "question": question,
-        "resolved_product_names": _format_resolved_products(resolved_product_names)
+        "resolved_product_names": _format_resolved_products(resolved_product_names),
+        "offset_value": offset_value,
+        "limit_value": limit_value
     })
     cleaned = raw_output.strip().strip("`").replace("sql\n", "", 1).strip()
     return cleaned
-
-
+GENERAL_FORBIDDEN_TABLES = ['"User"', '"UserAddress"', '"Cart"', '"Cart_Item"']
 def is_general_query_safe(query: str) -> bool:
     """Safety check for the general path. Uses ORIGINAL-CASE matching against
     the exact quoted identifiers, since Postgres identifiers are case-sensitive."""
     # Absolutely forbidden tables - reject if referenced at all
-    for table in PERSONAL_TABLES:
+    for table in GENERAL_FORBIDDEN_TABLES:
         if table in query:
             return False
 
@@ -331,12 +348,12 @@ def execute_general_sql(query: str):
     return _run_query(query)
 
 
-def answer_sql_general_question(question: str, resolved_product_names: list[str] | None = None) -> str:
+def answer_sql_general_question(question: str,  resolved_product_names: list[str] | None = None, page: int| None = 1) -> str:
     if has_destructive_intent(question):
         return ("I'm a read-only assistant and can't delete, cancel, or modify orders. "
                 "Please contact customer support directly for that request.")
 
-    query = generate_general_sql(question, resolved_product_names)
+    query = generate_general_sql(question, resolved_product_names, page)
     result, error = execute_general_sql(query)
 
     if error:
