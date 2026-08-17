@@ -1,0 +1,38 @@
+Payment Methods and Vouchers
+
+Accepted payment methods
+- Credit and debit cards (Visa, Mastercard, Meeza)
+- Cash on delivery
+- Mobile wallets (Vodafone Cash, InstaPay)
+- Store credit from approved returns
+
+Is my payment information secure?
+Yes. We never store your full card number on our servers - all card
+payments are processed through a PCI-compliant payment gateway, and your
+account only stores a masked reference to your card for convenience.
+
+Using a voucher code
+Enter your voucher code at checkout in the "Promo Code" field before
+placing your order. The discount is applied automatically if the code is
+valid and the order meets the voucher's minimum requirements. Only one
+voucher can be applied per order.
+
+Why is my voucher not working?
+Common reasons a voucher fails to apply:
+- The voucher has expired.
+- The order total is below the voucher's minimum spend requirement.
+- The voucher is restricted to specific categories or first-time customers.
+- The voucher has already been used (most codes are single-use per account).
+
+Can I combine multiple vouchers?
+No, only one voucher code can be applied per order.
+
+Failed or pending payments
+If a card payment shows as "pending" for more than 30 minutes, the charge
+was likely not completed - please retry checkout. If your card was charged
+but the order does not appear in your account, contact support with your
+payment reference number and we'll resolve it within one business day.
+
+Invoices and receipts
+A digital receipt is emailed automatically after every completed order.
+You can also download past invoices anytime from Order History.

@@ -1,0 +1,36 @@
+Shipping and Delivery
+
+Delivery areas
+We currently deliver across Cairo, Alexandria, and surrounding governorates.
+Enter your address at checkout to confirm delivery availability for your area.
+
+Delivery timing
+- Standard delivery: same-day if ordered before 2:00 PM, next-day otherwise.
+- Express delivery: within 2 hours of order confirmation, available in
+  central Cairo and Alexandria only, for an additional fee.
+- Scheduled delivery: choose a specific 2-hour delivery window up to 5 days
+  in advance at checkout.
+
+Delivery fees
+- Orders over 300 EGP: free standard delivery.
+- Orders under 300 EGP: a flat 25 EGP delivery fee applies.
+- Express delivery: additional 40 EGP regardless of order size.
+
+Tracking your order
+Once your order status changes to "shipped," you'll receive a tracking
+link by SMS and email. You can also check real-time status anytime under
+Order History in the app.
+
+Order statuses explained
+- Processing: your order is being prepared at the warehouse.
+- Shipped: your order has left the warehouse and is on its way.
+- Delivered: your order has been handed to you or left at your address.
+
+Missed deliveries
+If you're not available at the scheduled time, our driver will attempt
+contact and wait up to 10 minutes. If delivery can't be completed, the
+order is rescheduled for the next available window at no extra charge.
+
+Payment on delivery
+Cash on delivery is available for all standard and scheduled deliveries.
+Express deliveries require online payment at checkout.

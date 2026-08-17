@@ -96,15 +96,45 @@ mention you can only help with store-related questions (products, orders,
 policies, etc.) - do not attempt to answer the out-of-scope request itself,
 even partially.
 """
+def summarize_old_messages(state: AgentState):
+    messages = state["messages"]
+    keep_recent = 6  # keep the most recent N messages in full
 
+    to_summarize = messages[:-keep_recent]   # everything EXCEPT the most recent N
+    to_keep = messages[-keep_recent:]         # the most recent N, untouched
+
+    # Build a plain-text version of the old messages, ask the LLM to summarize
+    conversation_text = "\n".join(f"{m.type}: {m.content}" for m in to_summarize)
+    summary_text = llm.invoke(f"Summarize this conversation history concisely and never remove one of the product names that the user talk about:\n\n{conversation_text}").content
+
+    summary_message = SystemMessage(content=f"[Earlier conversation summary]: {summary_text}")
+
+    # Remove EVERY existing message (both the ones being summarized AND the
+    # ones we're keeping) - the reducer only supports append/remove, not
+    # insert-in-middle, so to place the summary BEFORE to_keep we must clear
+    # to_keep's positions too, then re-append them after the summary below.
+    removals = [RemoveMessage(id=m.id) for m in to_summarize] + [RemoveMessage(id=m.id) for m in to_keep]
+
+    # Return (removals, summary + re-appended kept messages) so Agent() can
+    # unpack into (removals, summary_msg) unchanged.
+    return removals, [summary_message] + list(to_keep)
+def should_summarize(state: AgentState) -> bool:
+    token_count = count_tokens_approximately(state["messages"])
+    return token_count > 3000
 def Agent(state: AgentState, config) -> AgentState:
-    user_id = config["configurable"]["user_id"]
-    formatted_prompt = AGENT_SYSTEM_PROMPT.format(user_id=user_id)
+    customer_id = config["configurable"]["customer_id"]
+    formatted_prompt = AGENT_SYSTEM_PROMPT.format(customer_id=customer_id)
     system_message = SystemMessage(content=formatted_prompt)
+
+    removals = []
+    summary_msg = []
+
+    if should_summarize(state):
+        removals, summary_msg = summarize_old_messages(state)   # builds the deletion instructions + summary
+
     response = llm.invoke([system_message] + list(state["messages"]))
-    return {"messages": [response]}
 
-
+    return {"messages": removals + summary_msg + [response]}
 def should_continue(state: AgentState):
     last_message = state["messages"][-1]
     return "continue" if last_message.tool_calls else "end"

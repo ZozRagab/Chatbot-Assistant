@@ -79,3 +79,9 @@ def chat(request: QuestionRequest, current_user: User = Depends(get_current_user
         route="agent",
         answer=final_answer
     )
+
+@app.post("/terminate")
+def terminate_session(current_user: User = Depends(get_current_user)):
+    thread_id = f"user-{current_user.Id}"
+    checkpointer.delete_thread(thread_id)
+    return {"status": "terminated", "thread_id": thread_id}

@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from langchain_core.tools import tool
 from A_C_rag import adaptive_corrective_answer
 from text_to_sql import answer_sql_specific_question, answer_sql_general_question
-from sql_ReAct import c_graph as compiled_graph
+from langchain_core.runnables import RunnableConfig
 load_dotenv()
 
 
@@ -136,6 +136,7 @@ def sql_agent_tool(question: str, config: RunnableConfig) -> str:
     ANY question requiring structured store/order data - it handles product
     name resolution and pagination internally and returns one final answer.
     Do NOT use this for policy/FAQ/general knowledge questions."""
+    from sql_ReAct import c_graph as compiled_graph
     user_id = config["configurable"]["user_id"]
 
     sub_config = {"configurable": {"user_id": user_id}}

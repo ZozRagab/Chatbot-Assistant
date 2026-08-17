@@ -49,7 +49,8 @@ def classify_strategy(question: str) -> str:
 # ============================================
 # STEP 2: Corrective RAG - grade each retrieved chunk's relevance
 # ============================================
-grade_template = """You are grading whether a retrieved document is relevant to a question.
+grade_template = """You are grading whether a retrieved document could help
+answer a question, even partially.python A_C_rag.py
 
 Question: {question}
 
@@ -65,6 +66,7 @@ grade_chain = grade_prompt | llm | StrOutputParser()
 
 def grade_chunk(question: str, chunk_text: str) -> bool:
     result = grade_chain.invoke({"question": question, "document": chunk_text})
+    print(f"  [RAW grade output: {result!r}]")
     return result.strip().lower().startswith("yes")
 
 
@@ -133,10 +135,13 @@ def adaptive_corrective_answer(question: str) -> str:
 
 if __name__ == "__main__":
     test_questions = [
-        "How long does shipping take?",                               # simple
-        "If I return a gift, do I get cash back or store credit?",    # careful
-        "What payment methods do you accept?",                        # simple
-        "Can I still get my money if the tags fell off by accident?", # careful, awkward phrasing - designed to stress the grading/retry loop
+    "What is the return policy?",                                          # broad - check simple vs careful classification
+    "How long does shipping take?",                                        # simple - regression check
+    "If I return a gift, do I get cash back or store credit?",             # careful - the case we just fixed
+    "If a delivered item is spoiled, do I get my money back automatically, or do I have to request it?",  # careful, in-domain
+    "What payment methods do you accept?",                                 # simple - regression check
+    "Can I combine two voucher codes on one order?",                       # answerable from payments_vouchers.txt (policy, not live validity) - careful
+    "Do you sell umbrellas?"
     ]
 
     for q in test_questions:
