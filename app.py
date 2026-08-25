@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, status, Depends
+from fastapi import FastAPI, HTTPException, status, Depends, BackgroundTasks 
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from langchain_core.messages import HumanMessage
@@ -9,7 +9,7 @@ from schemas import QuestionRequest, AnswerResponse
 from auth import create_token, get_current_user
 from models import get_db, User
 from utils import verify_password
-from agent_graph import graph, DB_URI
+from agent_graph import graph, DB_URI,summarize_chat
 
 
 # ============================================
@@ -53,33 +53,21 @@ def login(
 
     access_token = create_token({"user_id": user.Id})
     return {"access_token": access_token, "token_type": "bearer"}
-
-
-@app.post("/chat", response_model=AnswerResponse)
-def chat(request: QuestionRequest, current_user: User = Depends(get_current_user)):
-    question = request.question
-
-    config = {
-        "configurable": {
-            "thread_id": f"user-{current_user.Id}",
-            "user_id": current_user.Id
-        }
-    }
+@app.post("/chat")
+async def chat(request: QuestionRequest, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user)):
+    thread_id = f"user-{current_user.Id}"
+    config = {"configurable": {"thread_id": thread_id, "user_id": current_user.Id}}
 
     compiled_graph = app.state.compiled_graph
     result = compiled_graph.invoke(
-        {"messages": [HumanMessage(content=question)]},
+        {"messages": [{"role": "user", "content": request.question}]},
         config=config
     )
+    answer = result["messages"][-1].content
 
-    final_answer = result["messages"][-1].content
+    background_tasks.add_task(summarize_chat, config, result)
 
-    return AnswerResponse(
-        question=question,
-        route="agent",
-        answer=final_answer
-    )
-
+    return {"answer": answer}
 @app.post("/terminate")
 def terminate_session(current_user: User = Depends(get_current_user)):
     thread_id = f"user-{current_user.Id}"

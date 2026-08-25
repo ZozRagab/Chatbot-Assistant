@@ -1,11 +1,14 @@
 from typing import Annotated, Sequence, TypedDict
+from langchain_core.messages.utils import count_tokens_approximately
 from dotenv import load_dotenv
-from langchain_core.messages import BaseMessage, ToolMessage, SystemMessage
+from langchain_core.messages import BaseMessage, ToolMessage, SystemMessage,RemoveMessage
 from langchain_groq import ChatGroq
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import ToolNode
 import os
+from langchain_deepseek import ChatDeepSeek
+from IPython.display import Image, display
 from tools import (
     sql_agent_tool,
     search_policies_and_faqs,
@@ -27,7 +30,11 @@ tools = [
     sql_agent_tool,
     search_policies_and_faqs,
 ]
-llm = ChatGroq(model="qwen/qwen3.6-27b", temperature=0).bind_tools(tools)
+llm = ChatDeepSeek(
+    model="deepseek-v4-flash",
+    temperature=0,
+    extra_body={"thinking": {"type": "disabled"}}
+).bind_tools(tools)
 
 AGENT_SYSTEM_PROMPT = AGENT_SYSTEM_PROMPT = """You are a customer support assistant for a grocery
 ecommerce store. Reason step by step, call tools when you need information,
@@ -96,45 +103,44 @@ mention you can only help with store-related questions (products, orders,
 policies, etc.) - do not attempt to answer the out-of-scope request itself,
 even partially.
 """
+# agent_graph.py — add this alongside should_summarize / summarize_old_messages
 def summarize_old_messages(state: AgentState):
     messages = state["messages"]
-    keep_recent = 6  # keep the most recent N messages in full
+    keep_recent = 6
 
-    to_summarize = messages[:-keep_recent]   # everything EXCEPT the most recent N
-    to_keep = messages[-keep_recent:]         # the most recent N, untouched
+    to_summarize = messages[:-keep_recent]
+    to_keep = messages[-keep_recent:]
 
-    # Build a plain-text version of the old messages, ask the LLM to summarize
+    if not to_summarize:
+        return [], list(to_keep)
+
     conversation_text = "\n".join(f"{m.type}: {m.content}" for m in to_summarize)
-    summary_text = llm.invoke(f"Summarize this conversation history concisely and never remove one of the product names that the user talk about:\n\n{conversation_text}").content
-
+    summary_text = llm.invoke(
+        f"Summarize this conversation history concisely and never remove one "
+        f"of the product names that the user talked about:\n\n{conversation_text}"
+    ).content
     summary_message = SystemMessage(content=f"[Earlier conversation summary]: {summary_text}")
 
-    # Remove EVERY existing message (both the ones being summarized AND the
-    # ones we're keeping) - the reducer only supports append/remove, not
-    # insert-in-middle, so to place the summary BEFORE to_keep we must clear
-    # to_keep's positions too, then re-append them after the summary below.
     removals = [RemoveMessage(id=m.id) for m in to_summarize] + [RemoveMessage(id=m.id) for m in to_keep]
 
-    # Return (removals, summary + re-appended kept messages) so Agent() can
-    # unpack into (removals, summary_msg) unchanged.
     return removals, [summary_message] + list(to_keep)
-def should_summarize(state: AgentState) -> bool:
+def needs_summary(state: AgentState) -> bool:
     token_count = count_tokens_approximately(state["messages"])
-    return token_count > 3000
+    return token_count > 150000
+
+def summarize_chat(config: dict, state: AgentState):
+    if needs_summary(state):
+        removals, summary_msg = summarize_old_messages(state)
+        graph.update_state(config, {"messages": removals + summary_msg})
+
+
 def Agent(state: AgentState, config) -> AgentState:
-    customer_id = config["configurable"]["customer_id"]
-    formatted_prompt = AGENT_SYSTEM_PROMPT.format(customer_id=customer_id)
+    user_id = config["configurable"]["user_id"]
+    formatted_prompt = AGENT_SYSTEM_PROMPT.format(user_id=user_id)
     system_message = SystemMessage(content=formatted_prompt)
-
-    removals = []
-    summary_msg = []
-
-    if should_summarize(state):
-        removals, summary_msg = summarize_old_messages(state)   # builds the deletion instructions + summary
-
     response = llm.invoke([system_message] + list(state["messages"]))
-
-    return {"messages": removals + summary_msg + [response]}
+    return {"messages": [response]}
+    return {"messages": [response]}
 def should_continue(state: AgentState):
     last_message = state["messages"][-1]
     return "continue" if last_message.tool_calls else "end"

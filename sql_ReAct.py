@@ -6,6 +6,8 @@ from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import ToolNode
 import os
+from langchain_deepseek import ChatDeepSeek
+from IPython.display import Image, display
 from tools import (
     get_all_ordered_products_names,
     user_order_lookup,
@@ -36,7 +38,11 @@ tools = [
     get_all_product_names,
 ]
 
-llm = ChatGroq(model="qwen/qwen3.6-27b", temperature=0).bind_tools(tools)
+llm = ChatDeepSeek(
+    model="deepseek-v4-flash",
+    temperature=0,
+    extra_body={"thinking": {"type": "disabled"}}
+).bind_tools(tools)
 
 def sqlAgent(state: AgentState, config):
     user_id = config["configurable"]["user_id"]

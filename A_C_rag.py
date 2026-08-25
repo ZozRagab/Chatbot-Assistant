@@ -5,9 +5,11 @@ from langchain_groq import ChatGroq
 from pipeline import fusion_retrieval_chain, generation_chain, answer_question
 
 load_dotenv()
-
-llm = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
-
+llm = ChatGroq(
+    model="openai/gpt-oss-20b",
+    temperature=0,
+    reasoning_effort="low"
+)
 # ============================================
 # STEP 1: Adaptive routing - classify the retrieval strategy needed
 # ============================================

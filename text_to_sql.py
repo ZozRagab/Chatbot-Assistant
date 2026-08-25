@@ -4,11 +4,13 @@ import psycopg2
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_groq import ChatGroq
-
+from langchain_deepseek import ChatDeepSeek
 load_dotenv()
 
-llm = ChatGroq(model="qwen/qwen3.6-27b", temperature=0)
+llm = llm = ChatDeepSeek(
+    model="deepseek-chat",
+    temperature=0
+)
 
 # ============================================
 # Schema description
