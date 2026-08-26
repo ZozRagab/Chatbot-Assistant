@@ -1,14 +1,14 @@
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_groq import ChatGroq
+from langchain_deepseek import ChatDeepSeek
 from pipeline import fusion_retrieval_chain, generation_chain, answer_question
 
 load_dotenv()
-llm = ChatGroq(
-    model="openai/gpt-oss-20b",
+llm = ChatDeepSeek(
+    model="deepseek-v4-flash",
     temperature=0,
-    reasoning_effort="low"
+    extra_body={"thinking": {"type": "disabled"}}
 )
 # ============================================
 # STEP 1: Adaptive routing - classify the retrieval strategy needed
