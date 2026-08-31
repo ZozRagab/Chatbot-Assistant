@@ -13,6 +13,8 @@ from tools import (
     sql_agent_tool,
     search_policies_and_faqs,
 )
+from datetime import datetime
+from pydantic import Field
 
 load_dotenv()
 
@@ -23,6 +25,7 @@ DB_URI = (
 
 
 class AgentState(TypedDict):
+    create_at : datetime = Field(default_factory=datetime.now())
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
@@ -134,13 +137,14 @@ def summarize_chat(config: dict, state: AgentState):
         graph.update_state(config, {"messages": removals + summary_msg})
 
 
-def Agent(state: AgentState, config) -> AgentState:
+async def Agent(state: AgentState, config) -> AgentState:
     user_id = config["configurable"]["user_id"]
     formatted_prompt = AGENT_SYSTEM_PROMPT.format(user_id=user_id)
     system_message = SystemMessage(content=formatted_prompt)
-    response = llm.invoke([system_message] + list(state["messages"]))
-    return {"messages": [response]}
-    return {"messages": [response]}
+    full_message=None
+    async for chunk in llm.astream([system_message] + list(state["messages"])):
+        full_message = chunk if full_message is None else full_message + chunk
+    return {"messages": [full_message]}
 def should_continue(state: AgentState):
     last_message = state["messages"][-1]
     return "continue" if last_message.tool_calls else "end"

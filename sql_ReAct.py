@@ -44,7 +44,7 @@ llm = ChatDeepSeek(
     extra_body={"thinking": {"type": "disabled"}}
 ).bind_tools(tools)
 
-def sqlAgent(state: AgentState, config):
+async def sqlAgent(state: AgentState, config):
     user_id = config["configurable"]["user_id"]
     SQL_AGENT_SYSTEM_PROMPT = """You are a specialized SQL data agent for a
 grocery ecommerce store. You ONLY answer questions using the tools available
@@ -115,7 +115,7 @@ SAFETY
 """
     formatted_prompt = SQL_AGENT_SYSTEM_PROMPT.format(user_id=user_id)
     system_message = SystemMessage(content=formatted_prompt)
-    response = llm.invoke([system_message] + list(state["messages"]))
+    response = await llm.ainvoke([system_message] + list(state["messages"]))
     return {"messages": [response]}
 
 def should_continue(state: AgentState):

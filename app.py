@@ -4,7 +4,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.postgres import PostgresSaver
-
+from fastapi.responses import StreamingResponse
 from schemas import QuestionRequest, AnswerResponse
 from auth import create_token, get_current_user
 from models import get_db, User
@@ -16,17 +16,19 @@ from agent_graph import graph, DB_URI,summarize_chat
 # Lifespan: opens the checkpoint database connection ONCE, when the server
 # actually starts, and closes it ONCE, when the server actually shuts down.
 # ============================================
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    checkpointer_cm = PostgresSaver.from_conn_string(DB_URI)
-    checkpointer = checkpointer_cm.__enter__()
-    checkpointer.setup()
+    checkpointer_cm = AsyncPostgresSaver.from_conn_string(DB_URI)
+    checkpointer = await checkpointer_cm.__aenter__()
+    await checkpointer.setup()
 
     app.state.compiled_graph = graph.compile(checkpointer=checkpointer)
 
     yield
 
-    checkpointer_cm.__exit__(None, None, None)
+    await checkpointer_cm.__aexit__(None, None, None)
 
 
 app = FastAPI(title="Grocery Ecommerce RAG Assistant", lifespan=lifespan)
@@ -54,22 +56,31 @@ def login(
     access_token = create_token({"user_id": user.Id})
     return {"access_token": access_token, "token_type": "bearer"}
 @app.post("/chat")
-async def chat(request: QuestionRequest, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user)):
+async def chat(request: QuestionRequest, current_user: User = Depends(get_current_user)):
     thread_id = f"user-{current_user.Id}"
     config = {"configurable": {"thread_id": thread_id, "user_id": current_user.Id}}
-
     compiled_graph = app.state.compiled_graph
-    result = compiled_graph.invoke(
-        {"messages": [{"role": "user", "content": request.question}]},
-        config=config
-    )
-    answer = result["messages"][-1].content
 
-    background_tasks.add_task(summarize_chat, config, result)
+    async def event_generator():
+        async for chunk, metadata in compiled_graph.astream(
+            {"messages": [{"role": "user", "content": request.question}]},
+            config=config,
+            stream_mode="messages"
+        ):
+            print(metadata, chunk.content)
+            if getattr(chunk, "tool_call_chunks", None):
+                continue
+            if metadata.get("langgraph_node") != "ReAct_agent":   # only allow the OUTER agent's own node
+                continue
+            if chunk.content:
+                yield chunk.content
 
-    return {"answer": answer}
+    return StreamingResponse(event_generator(), media_type="text/plain")
 @app.post("/terminate")
 def terminate_session(current_user: User = Depends(get_current_user)):
+    """
+    Termination route
+    """
     thread_id = f"user-{current_user.Id}"
     checkpointer.delete_thread(thread_id)
     return {"status": "terminated", "thread_id": thread_id}

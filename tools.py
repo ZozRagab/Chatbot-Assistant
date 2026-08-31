@@ -130,7 +130,7 @@ def get_all_product_names(page: int = 1) -> dict:
     return {"items": names, "page": page, "has_more": has_more}
 
 @tool
-def sql_agent_tool(question: str, config: RunnableConfig) -> str:
+async def sql_agent_tool(question: str, config: RunnableConfig) -> str:
     """Delegate a question about products, orders, cart, stock, prices,
     reviews, or vouchers to the specialized SQL data agent. Use this for
     ANY question requiring structured store/order data - it handles product
@@ -141,7 +141,7 @@ def sql_agent_tool(question: str, config: RunnableConfig) -> str:
 
     sub_config = {"configurable": {"user_id": user_id}}
 
-    result = compiled_graph.invoke(
+    result = await compiled_graph.ainvoke(
         {"messages": [{"role": "user", "content": question}]},
         config=sub_config
     )
