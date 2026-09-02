@@ -1,29 +1,21 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, status, Depends, BackgroundTasks 
-from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
-from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.postgres import PostgresSaver
-from fastapi.responses import StreamingResponse
-from schemas import QuestionRequest, AnswerResponse
-from auth import create_token, get_current_user
-from models import get_db, User
-from utils import verify_password
-from agent_graph import graph, DB_URI,summarize_chat
+from fastapi import FastAPI, BackgroundTasks
+from schemas import QuestionRequest, AnswerResponse, TerminationRequest, TerminationResponse
+from agent_graph import graph, DB_URI, summarize_chat
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 
 # ============================================
 # Lifespan: opens the checkpoint database connection ONCE, when the server
 # actually starts, and closes it ONCE, when the server actually shuts down.
 # ============================================
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     checkpointer_cm = AsyncPostgresSaver.from_conn_string(DB_URI)
     checkpointer = await checkpointer_cm.__aenter__()
     await checkpointer.setup()
 
+    app.state.checkpointer = checkpointer
     app.state.compiled_graph = graph.compile(checkpointer=checkpointer)
 
     yield
@@ -39,48 +31,29 @@ def root():
     return {"status": "RAG assistant is running"}
 
 
-@app.post("/login", status_code=status.HTTP_200_OK)
-def login(
-    form: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db),
-):
-    # username field carries the email in this flow
-    user = db.query(User).filter(User.Email == form.username).first()
-    if not user or not verify_password(form.password, user.HashedPassword):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+@app.post("/chat", response_model=AnswerResponse)
+async def chat(request: QuestionRequest, background_tasks: BackgroundTasks):
+    thread_id = f"user-{request.user_id}"
+    config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
 
-    access_token = create_token({"user_id": user.Id})
-    return {"access_token": access_token, "token_type": "bearer"}
-@app.post("/chat")
-async def chat(request: QuestionRequest, current_user: User = Depends(get_current_user)):
-    thread_id = f"user-{current_user.Id}"
-    config = {"configurable": {"thread_id": thread_id, "user_id": current_user.Id}}
     compiled_graph = app.state.compiled_graph
+    result = await compiled_graph.ainvoke(
+        {"messages": [{"role": "user", "content": request.question}]},
+        config=config
+    )
+    answer = result["messages"][-1].content
 
-    async def event_generator():
-        async for chunk, metadata in compiled_graph.astream(
-            {"messages": [{"role": "user", "content": request.question}]},
-            config=config,
-            stream_mode="messages"
-        ):
-            print(metadata, chunk.content)
-            if getattr(chunk, "tool_call_chunks", None):
-                continue
-            if metadata.get("langgraph_node") != "ReAct_agent":   # only allow the OUTER agent's own node
-                continue
-            if chunk.content:
-                yield chunk.content
+    background_tasks.add_task(summarize_chat, config, result)
 
-    return StreamingResponse(event_generator(), media_type="text/plain")
-@app.post("/terminate")
-def terminate_session(current_user: User = Depends(get_current_user)):
+    return {"question": request.question, "answer": answer}
+
+
+@app.post("/terminate", response_model=TerminationResponse)
+async def terminate_session(request: TerminationRequest):
     """
-    Termination route
+    Termination route - deletes the LangGraph checkpoint thread for this user.
     """
-    thread_id = f"user-{current_user.Id}"
-    checkpointer.delete_thread(thread_id)
+    thread_id = f"user-{request.user_id}"
+    checkpointer = app.state.checkpointer
+    await checkpointer.adelete_thread(thread_id)
     return {"status": "terminated", "thread_id": thread_id}

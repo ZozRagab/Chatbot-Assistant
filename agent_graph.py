@@ -1,13 +1,12 @@
 from typing import Annotated, Sequence, TypedDict
 from langchain_core.messages.utils import count_tokens_approximately
 from dotenv import load_dotenv
-from langchain_core.messages import BaseMessage, ToolMessage, SystemMessage,RemoveMessage
+from langchain_core.messages import BaseMessage, ToolMessage, SystemMessage, RemoveMessage
 from langchain_groq import ChatGroq
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import ToolNode
 import os
-from langchain_deepseek import ChatDeepSeek
 from IPython.display import Image, display
 from tools import (
     sql_agent_tool,
@@ -25,7 +24,7 @@ DB_URI = (
 
 
 class AgentState(TypedDict):
-    create_at : datetime = Field(default_factory=datetime.now())
+    create_at: datetime = Field(default_factory=datetime.now())
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
@@ -33,13 +32,15 @@ tools = [
     sql_agent_tool,
     search_policies_and_faqs,
 ]
-llm = ChatDeepSeek(
-    model="deepseek-v4-flash",
+
+# Swapped from DeepSeek to Groq's gpt-oss-120b - fast enough on LPU hardware
+# for tool routing + synthesis, meaningfully faster than DeepSeek per call.
+llm = ChatGroq(
+    model="openai/gpt-oss-120b",
     temperature=0,
-    extra_body={"thinking": {"type": "disabled"}}
 ).bind_tools(tools)
 
-AGENT_SYSTEM_PROMPT = AGENT_SYSTEM_PROMPT = """You are a customer support assistant for a grocery
+AGENT_SYSTEM_PROMPT = """You are a customer support assistant for a grocery
 ecommerce store. Reason step by step, call tools when you need information,
 and only answer once you have what you need.
 
@@ -106,7 +107,8 @@ mention you can only help with store-related questions (products, orders,
 policies, etc.) - do not attempt to answer the out-of-scope request itself,
 even partially.
 """
-# agent_graph.py — add this alongside should_summarize / summarize_old_messages
+
+
 def summarize_old_messages(state: AgentState):
     messages = state["messages"]
     keep_recent = 6
@@ -127,9 +129,12 @@ def summarize_old_messages(state: AgentState):
     removals = [RemoveMessage(id=m.id) for m in to_summarize] + [RemoveMessage(id=m.id) for m in to_keep]
 
     return removals, [summary_message] + list(to_keep)
+
+
 def needs_summary(state: AgentState) -> bool:
     token_count = count_tokens_approximately(state["messages"])
     return token_count > 150000
+
 
 def summarize_chat(config: dict, state: AgentState):
     if needs_summary(state):
@@ -141,10 +146,12 @@ async def Agent(state: AgentState, config) -> AgentState:
     user_id = config["configurable"]["user_id"]
     formatted_prompt = AGENT_SYSTEM_PROMPT.format(user_id=user_id)
     system_message = SystemMessage(content=formatted_prompt)
-    full_message=None
+    full_message = None
     async for chunk in llm.astream([system_message] + list(state["messages"])):
         full_message = chunk if full_message is None else full_message + chunk
     return {"messages": [full_message]}
+
+
 def should_continue(state: AgentState):
     last_message = state["messages"][-1]
     return "continue" if last_message.tool_calls else "end"

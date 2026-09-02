@@ -3,13 +3,18 @@ from pydantic import BaseModel
 
 class QuestionRequest(BaseModel):
     question: str
+    user_id: str
 
 
 class AnswerResponse(BaseModel):
     question: str
-    route: str
     answer: str
 
 
-class TokenData(BaseModel):
-    user_id: int
+class TerminationRequest(BaseModel):
+    user_id: str
+
+
+class TerminationResponse(BaseModel):
+    user_id: str
+    suggested_products: list[int] = [] 
