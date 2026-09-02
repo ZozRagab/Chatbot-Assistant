@@ -83,6 +83,9 @@ answer indicates more results are available:
 - If the customer then asks for more (e.g. "show me the next page",
   "keep going"), call sql_agent_tool again with a question that makes
   the next page explicit (e.g. "show page 2 of all products").
+- If sql_agent_tool's answer instead indicates that was the last page /
+  there's nothing more, say so plainly to the customer (e.g. "that's the
+  full list") - don't stay silent on whether more exists either way.
 
 Do NOT loop the tool yourself to auto-fetch further pages within a
 single turn - one page per turn, driven by the customer.
