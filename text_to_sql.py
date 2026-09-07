@@ -152,17 +152,17 @@ def is_properly_scoped(query: str, user_id: int | None) -> bool:
     if user_id is None:
         return False
 
-    if str(user_id) not in query:
+    # Require an explicit equality filter on this exact id. A bare substring
+    # check on the id was exploitable: for user 1, the "1" in "LIMIT 1"
+    # satisfied it and let an UNSCOPED store-wide aggregate through as if it
+    # were that user's own data. (?!\d) stops id 1 matching "= 12".
+    id_pat = re.escape(str(user_id)) + r"(?!\d)"
+    has_userid_filter = re.search(r'"UserId"\s*=\s*' + id_pat, query) is not None
+    has_user_pk_filter = ('"User"' in query) and re.search(r'"Id"\s*=\s*' + id_pat, query) is not None
+    if not (has_userid_filter or has_user_pk_filter):
         return False
 
-    normalized_for_keywords = query.lower()
-    if " or " in normalized_for_keywords:
-        return False
-
-    # Extra guard for the "User" table itself: even with the real id present,
-    # block anything that could return more than one user's row.
-    if '"User"' in query and "limit 1" not in normalized_for_keywords \
-            and f'"Id" = {user_id}' not in query and f'"Id"={user_id}' not in query:
+    if " or " in query.lower():
         return False
 
     return True

@@ -1,3 +1,12 @@
+import asyncio
+import sys
+
+# psycopg (v3, used by AsyncPostgresSaver) can't run async on Windows' default
+# ProactorEventLoop. uvicorn sets the selector policy itself, but anything
+# else that drives this app (tests, scripts, `python app.py`) would crash.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, BackgroundTasks
 from schemas import QuestionRequest, AnswerResponse, TerminationRequest, TerminationResponse

@@ -8,13 +8,13 @@ from langgraph.prebuilt import ToolNode
 import os
 from IPython.display import Image, display
 from tools import (
-    get_all_ordered_products_names,
+    catalog_snapshot,
+    ordered_product_names,
     user_order_lookup,
     general_sql_lookup,
-    get_all_product_names,
-    get_all_category_names,
     get_order_by_recency,
     list_my_orders,
+    get_my_most_ordered_products,
     get_cart_contents,
     get_saved_addresses,
     get_my_reviews,
@@ -43,13 +43,12 @@ class AgentState(TypedDict):
 
 
 tools = [
-    # resolution helpers
-    get_all_product_names,
-    get_all_ordered_products_names,
-    get_all_category_names,
+    # (product/category name resolution now happens in-prompt via the
+    #  CATALOG section - no resolution tools, no extra round trip)
     # dedicated personal tools
     get_order_by_recency,
     list_my_orders,
+    get_my_most_ordered_products,
     get_cart_contents,
     get_saved_addresses,
     get_my_reviews,
@@ -66,30 +65,36 @@ tools = [
     general_sql_lookup,
 ]
 
-# Swapped from Groq to Together's GLM-5.3-Flash. This loop is the most
-# latency-critical path (2-4 LLM calls per question) and was hitting Groq's
-# 8,000 TPM ceiling hardest; GLM-5.3-Flash routed tools correctly and stayed
-# fast under equivalent repeated load in testing. gpt-oss-20b was tried on
-# Together first but its tool_calls came back EMPTY there - do not use
-# gpt-oss on Together for anything that binds tools.
+# SQL sub-agent model: Llama-3.3-70B on Together. Chosen from an isolated
+# A/B on the 11 benchmark SQL questions (x2): Llama median 1.63s / p90 2.30s
+# / max 2.78s vs GLM-5.3-Flash 2.37s / 3.80s / max 14.43s, with fewer tool
+# calls (no double-check calls) and correct answers. Its one weakness -
+# picking a single tool when a question needs two - never applies here,
+# because every sub-agent question maps to one tool; it DOES apply to the
+# outer agent, which is why agent_graph.py stays on GLM-5.3-Flash.
+# Notes: gpt-oss-20b on Together returns EMPTY tool_calls - never bind tools
+# to it there. Groq (gpt-oss-20b, ~0.5s/call) remains the reference
+# benchmark but its 8,000 TPM ceiling stalls after ~1 question/minute.
 llm = ChatTogether(
-    model="zai-org/GLM-5.3-Flash",
+    model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
     temperature=0,
-    reasoning_effort="low",  # GLM reasons by default; this loop runs 2-4 LLM calls
-                            # per question so that compounds. "low" -> 0 reasoning
-                            # tokens, median 1.03s -> 0.79s per call.
+    reasoning_effort="low",  # no-op for Llama (not a reasoning model); kept so
+                            # swapping a reasoning model back in stays cheap.
 ).bind_tools(tools)
 
 async def sqlAgent(state: AgentState, config):
-    user_id = config["configurable"]["user_id"]
+    user_id = int(config["configurable"]["user_id"])
+    snap = catalog_snapshot()
+    ordered = ordered_product_names(user_id)
     SQL_AGENT_SYSTEM_PROMPT = """You are a specialized SQL data agent for a
 grocery ecommerce store. Answer ONLY using the tools available - never
 guess, fabricate data, or write SQL yourself.
 
-Authenticated user id: {user_id}. Only relevant to tools touching this
-user's own data (orders, cart, addresses, their reviews) - never use it to
-access or imply another user's data, and it's irrelevant to general/catalog
-questions.
+Authenticated customer: user id {user_id}. Personal tools are already
+bound to this customer - you never pass an id. If the question mentions
+THIS id (e.g. "(user id {user_id})"), it simply refers to the customer you
+are serving - proceed normally. Only a DIFFERENT id or another person's
+name is off-limits: refuse those, never look them up.
 
 ===========================================================
 TOOL SELECTION - DEDICATED TOOL FIRST, FALLBACK LAST
@@ -97,6 +102,7 @@ TOOL SELECTION - DEDICATED TOOL FIRST, FALLBACK LAST
 Personal (this user's own data):
 - get_order_by_recency(offset) - one order by recency (0=most recent)
 - list_my_orders - paginated list of past orders, summary only
+- get_my_most_ordered_products(limit) - what this customer buys most
 - get_cart_contents - current cart
 - get_saved_addresses - saved addresses
 - get_my_reviews - reviews this user wrote
@@ -110,9 +116,6 @@ General/store-wide (never tied to one user):
 - get_product_reviews - public reviews for named product(s)
 - check_voucher_validity(code) - is a promo code valid
 
-Resolution helpers (see next section): get_all_product_names,
-get_all_ordered_products_names, get_all_category_names.
-
 Fallback ONLY if nothing above fits (these write SQL on the fly):
 - user_order_lookup - other personal questions
 - general_sql_lookup - other general/store-wide questions (e.g. "list all
@@ -121,29 +124,36 @@ Never use either fallback to answer about one specific named person (e.g.
 "what has user 3 reviewed") - refuse instead.
 
 ===========================================================
-RESOLVING CASUAL NAMES - REQUIRED BEFORE ANY resolved_product_names /
-resolved_category_names ARGUMENT
+CATALOG - resolve casual wording against these EXACT names, in-prompt
 ===========================================================
-1. Call get_all_ordered_products_names (user's order history),
-   get_all_product_names (catalog), or get_all_category_names
-   (categories), as appropriate.
-2. Match the customer's casual wording (e.g. "fizzy drinks") against the
-   returned names yourself.
-3. Pass ONLY the matched exact name(s) into the intended tool - never the
-   casual wording. Pass multiple names if several could match.
-Applies to get_product_details, get_products_by_category,
-get_product_reviews, get_my_reviews (when a product is named), and both
-fallback tools.
+Categories: {categories}
+Products: {products}
+Products THIS customer has ordered before: {ordered}
+
+Whenever a tool takes resolved_product_names / resolved_category_names:
+- Match the customer's casual wording against the names above YOURSELF, by
+  meaning as well as spelling ("fizzy drinks" -> Pepsi, Sparkling Water;
+  "aples" -> Red Apples, Green Apples; "the bread I bought" -> the bread
+  in their ordered list).
+- Pass ONLY exact catalog name(s) - never the casual wording. Pass several
+  if several could match.
+- Never invent a name that isn't listed. If nothing matches, tell the
+  customer honestly that you couldn't find it.
+No tool call is needed to resolve a name - it's all above.
+
+===========================================================
+EFFICIENCY
+===========================================================
+- One tool call is usually enough. Do NOT call a second tool just to
+  double-check a result you already have (e.g. list_my_orders after
+  get_order_by_recency already answered the question).
+- Answer with what the tool returned. Only fetch extra detail (e.g.
+  get_product_details after a category listing) if the customer asked
+  for it.
 
 ===========================================================
 PAGINATION
 ===========================================================
-Resolution tools (get_all_product_names, get_all_ordered_products_names,
-get_all_category_names): stop once you find a confident match. No match
-and has_more True -> call again with page+1 (a single empty page doesn't
-mean it doesn't exist). No match and has_more False -> tell the customer
-honestly, don't guess.
-
 Listing tools (list_my_orders, get_products_by_category,
 get_products_on_sale, get_product_reviews, general_sql_lookup): call ONCE
 per question regardless of has_more. Your final answer must always state
@@ -159,8 +169,23 @@ SAFETY
 - Never expose password hashes, auth tokens, or another user's
   reviews/voucher usage - no tool here provides that.
 - If a tool returns no results, say so honestly rather than fabricating.
+
+===========================================================
+VOICE
+===========================================================
+Your answer is shown to the customer directly - always address them as
+"you", even if the question is phrased in the third person ("the customer",
+"the user"): it is the customer asking. Write in a friendly
+customer-support voice; if something can't be found or done, say so
+politely and suggest what they can do instead. Do NOT end with an offer or
+a follow-up question ("Anything else?") - just answer.
 """
-    formatted_prompt = SQL_AGENT_SYSTEM_PROMPT.format(user_id=user_id)
+    formatted_prompt = SQL_AGENT_SYSTEM_PROMPT.format(
+        user_id=user_id,
+        categories=", ".join(snap["categories"]) or "(none)",
+        products=", ".join(snap["products"]) or "(none)",
+        ordered=", ".join(ordered) or "(no orders yet)",
+    )
     system_message = SystemMessage(content=formatted_prompt)
     response = await llm.ainvoke([system_message] + list(state["messages"]))
     return {"messages": [response]}
