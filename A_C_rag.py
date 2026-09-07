@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_deepseek import ChatDeepSeek
-from langchain_groq import ChatGroq
+from langchain_together import ChatTogether
 from pipeline import (
     fusion_retrieval_chain,
     generation_chain,
@@ -19,10 +19,12 @@ llm = ChatDeepSeek(
     extra_body={"thinking": {"type": "disabled"}}
 )
 
-# Fast model for cheap steps: grading and rewriting
-fast_llm = ChatGroq(
-    model="openai/gpt-oss-20b",
-    temperature=0
+# Fast model for cheap steps: grading and rewriting.
+# Swapped from Groq (8,000 TPM ceiling) to Together's GLM-5.3-Flash.
+fast_llm = ChatTogether(
+    model="zai-org/GLM-5.3-Flash",
+    temperature=0,
+    reasoning_effort="low",  # grading/rewriting need no chain-of-thought
 )
 
 # ============================================

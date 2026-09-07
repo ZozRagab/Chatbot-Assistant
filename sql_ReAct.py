@@ -1,7 +1,7 @@
 from typing import Annotated, Sequence, TypedDict
 from dotenv import load_dotenv
 from langchain_core.messages import BaseMessage, ToolMessage, SystemMessage
-from langchain_groq import ChatGroq
+from langchain_together import ChatTogether
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import ToolNode
@@ -66,12 +66,18 @@ tools = [
     general_sql_lookup,
 ]
 
-llm = ChatGroq(
-    model="openai/gpt-oss-20b",
+# Swapped from Groq to Together's GLM-5.3-Flash. This loop is the most
+# latency-critical path (2-4 LLM calls per question) and was hitting Groq's
+# 8,000 TPM ceiling hardest; GLM-5.3-Flash routed tools correctly and stayed
+# fast under equivalent repeated load in testing. gpt-oss-20b was tried on
+# Together first but its tool_calls came back EMPTY there - do not use
+# gpt-oss on Together for anything that binds tools.
+llm = ChatTogether(
+    model="zai-org/GLM-5.3-Flash",
     temperature=0,
-    reasoning_effort="low",  # gpt-oss reasons by default on every call; this
-                             # ReAct loop hits the LLM 2-4x per question, so
-                             # full reasoning compounds badly - keep it low.
+    reasoning_effort="low",  # GLM reasons by default; this loop runs 2-4 LLM calls
+                            # per question so that compounds. "low" -> 0 reasoning
+                            # tokens, median 1.03s -> 0.79s per call.
 ).bind_tools(tools)
 
 async def sqlAgent(state: AgentState, config):

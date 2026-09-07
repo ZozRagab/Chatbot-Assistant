@@ -2,7 +2,7 @@ from typing import Annotated, Sequence, TypedDict
 from langchain_core.messages.utils import count_tokens_approximately
 from dotenv import load_dotenv
 from langchain_core.messages import BaseMessage, ToolMessage, SystemMessage, RemoveMessage
-from langchain_groq import ChatGroq
+from langchain_together import ChatTogether
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import ToolNode
@@ -33,11 +33,16 @@ tools = [
     search_policies_and_faqs,
 ]
 
-# Swapped from DeepSeek to Groq's gpt-oss-120b - fast enough on LPU hardware
-# for tool routing + synthesis, meaningfully faster than DeepSeek per call.
-llm = ChatGroq(
-    model="openai/gpt-oss-120b",
+# Swapped from Groq to Together's GLM-5.3-Flash - Groq's gpt-oss-120b hit an
+# 8,000 TPM rate-limit ceiling causing 10-60s stalls under this agent's real
+# token load; GLM-5.3-Flash held steady under equivalent load in testing,
+# routes tools correctly, and has a much larger (1M) context window.
+llm = ChatTogether(
+    model="zai-org/GLM-5.3-Flash",
     temperature=0,
+    reasoning_effort="low",  # GLM-5.3-Flash reasons on EVERY call by default
+                            # (~250 reasoning tokens per 6 calls). "low" drops that
+                            # to 0 and cut median latency 1.03s -> 0.79s in testing.
 ).bind_tools(tools)
 
 AGENT_SYSTEM_PROMPT = """You are a customer support assistant for a grocery
@@ -63,8 +68,9 @@ You have exactly two tools:
   NOT try to reason about SQL, pagination, or product matching yourself.
 
 - search_policies_and_faqs -> use for questions about store policies,
-  FAQs, returns, shipping, delivery windows, payment methods, or general
-  product descriptions that aren't about live stock/price/order data.
+  FAQs, returns, shipping, delivery windows, or payment methods. It has no
+  product data at all - anything about a specific product, including its
+  description, goes to sql_agent_tool.
 
 If a question spans both (e.g. "is my order eligible for a refund, and
 what's your refund policy?"), call both tools and combine their answers

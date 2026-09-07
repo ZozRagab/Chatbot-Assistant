@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain_groq import ChatGroq
+from langchain_together import ChatTogether
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.load import dumps, loads
@@ -27,9 +27,10 @@ vectorstore = Chroma(
 retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
 # ============================================
-# LLM (Groq - used for query generation and final answer)
+# LLM (Together GLM-5.3-Flash - used for query generation and final answer;
+# swapped from Groq, which hit an 8,000 TPM ceiling under real load)
 # ============================================
-llm = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+llm = ChatTogether(model="zai-org/GLM-5.3-Flash", temperature=0, reasoning_effort="low")
 
 # ============================================
 # RAG-FUSION: query variant generation

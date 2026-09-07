@@ -465,10 +465,10 @@ async def sql_agent_tool(question: str, config: RunnableConfig) -> str:
     return result["messages"][-1].content
 @tool
 def search_policies_and_faqs(question: str) -> str:
-    """Search FAQs, policies, and product descriptions - covers returns,
-    shipping, delivery, payment methods, and general product details. Do NOT
-    use this for order-specific or account-specific data (use the order/cart
-    tools for that)."""
+    """Search the store's FAQs and policies - covers returns, refunds,
+    shipping, delivery, and payment methods. It holds NO product or account
+    data: anything about a specific product (including its description),
+    an order, or an account goes to the SQL tools instead."""
     return adaptive_corrective_answer(question)
 
 
