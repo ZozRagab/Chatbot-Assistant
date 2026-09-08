@@ -1,7 +1,7 @@
 from typing import Annotated, Sequence, TypedDict
 from langchain_core.messages.utils import count_tokens_approximately
 from dotenv import load_dotenv
-from langchain_core.messages import BaseMessage, ToolMessage, SystemMessage, RemoveMessage, AIMessage
+from langchain_core.messages import BaseMessage, ToolMessage, SystemMessage, RemoveMessage
 from langchain_together import ChatTogether
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, END, START
@@ -33,16 +33,11 @@ tools = [
     search_policies_and_faqs,
 ]
 
-# Swapped from Groq to Together's GLM-5.3-Flash - Groq's gpt-oss-120b hit an
-# 8,000 TPM rate-limit ceiling causing 10-60s stalls under this agent's real
-# token load; GLM-5.3-Flash held steady under equivalent load in testing,
-# routes tools correctly, and has a much larger (1M) context window.
+# Swapped from DeepSeek to Groq's gpt-oss-120b - fast enough on LPU hardware
+# for tool routing + synthesis, meaningfully faster than DeepSeek per call.
 llm = ChatTogether(
-    model="zai-org/GLM-5.3-Flash",
+    model="openai/gpt-oss-120b",
     temperature=0,
-    reasoning_effort="low",  # GLM-5.3-Flash reasons on EVERY call by default
-                            # (~250 reasoning tokens per 6 calls). "low" drops that
-                            # to 0 and cut median latency 1.03s -> 0.79s in testing.
 ).bind_tools(tools)
 
 AGENT_SYSTEM_PROMPT = """You are a customer support assistant for a grocery
@@ -66,13 +61,10 @@ You have exactly two tools:
   SQL generation, and pagination internally. Give it the customer's
   question in plain language and use its returned answer directly - do
   NOT try to reason about SQL, pagination, or product matching yourself.
-  Never write the customer's user id into the question you send it - the
-  id is attached automatically.
 
 - search_policies_and_faqs -> use for questions about store policies,
-  FAQs, returns, shipping, delivery windows, or payment methods. It has no
-  product data at all - anything about a specific product, including its
-  description, goes to sql_agent_tool.
+  FAQs, returns, shipping, delivery windows, payment methods, or general
+  product descriptions that aren't about live stock/price/order data.
 
 If a question spans both (e.g. "is my order eligible for a refund, and
 what's your refund policy?"), call both tools and combine their answers
@@ -168,29 +160,9 @@ def should_continue(state: AgentState):
     return "continue" if last_message.tool_calls else "end"
 
 
-def after_tools(state: AgentState):
-    """SQL-only turn -> the sub-agent's answer is already customer-ready, so
-    skip the outer model's re-synthesis call. Any other shape (FAQ, or a
-    mixed turn that called both tools in parallel) still needs the outer
-    model to combine/frame the results. The decision reads the tool calls
-    the model already made - no extra LLM call."""
-    ai = next(m for m in reversed(state["messages"]) if getattr(m, "tool_calls", None))
-    names = [tc["name"] for tc in ai.tool_calls]
-    return "passthrough" if names == ["sql_agent_tool"] else "synthesize"
-
-
-def passthrough(state: AgentState):
-    """Promote the sub-agent's answer to the final assistant message without
-    an LLM call - keeps conversation history well-formed (tool call ->
-    tool result -> assistant), which some providers require."""
-    return {"messages": [AIMessage(content=state["messages"][-1].content)]}
-
-
 graph = StateGraph(AgentState)
 graph.add_node("ReAct_agent", Agent)
 graph.add_node("tools", ToolNode(tools))
-graph.add_node("passthrough", passthrough)
 graph.add_edge(START, "ReAct_agent")
 graph.add_conditional_edges("ReAct_agent", should_continue, {"continue": "tools", "end": END})
-graph.add_conditional_edges("tools", after_tools, {"synthesize": "ReAct_agent", "passthrough": "passthrough"})
-graph.add_edge("passthrough", END)
+graph.add_edge("tools", "ReAct_agent")
