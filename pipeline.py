@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain_together import ChatTogether
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.load import dumps, loads
@@ -24,13 +24,12 @@ vectorstore = Chroma(
     persist_directory="./chroma_data"
 )
 
-retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 
 # ============================================
-# LLM (Together GLM-5.3-Flash - used for query generation and final answer;
-# swapped from Groq, which hit an 8,000 TPM ceiling under real load)
+# LLM (Gemini 2.5 Flash - used for query generation and final answer)
 # ============================================
-llm = ChatTogether(model="zai-org/GLM-5.3-Flash", temperature=0, reasoning_effort="low")
+llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", temperature=0)
 
 # ============================================
 # RAG-FUSION: query variant generation

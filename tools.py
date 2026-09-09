@@ -18,74 +18,46 @@ def _get_connection():
     )
 
 
-import time as _time
-
-_CATALOG_CACHE = {"at": 0.0, "products": [], "categories": []}
-_CATALOG_TTL_SECONDS = 60
-
-
-def catalog_snapshot() -> dict:
-    """Active product names + category names for the sub-agent's system
-    prompt, so it can resolve casual wording ("fizzy drinks") against real
-    names WITHOUT a tool round trip. Cached briefly; the catalog is small."""
-    now = _time.time()
-    if now - _CATALOG_CACHE["at"] > _CATALOG_TTL_SECONDS:
-        conn = _get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT "Name" FROM "Product" WHERE "isActive" = true ORDER BY "Name"')
-        products = [r[0] for r in cursor.fetchall()]
-        cursor.execute('SELECT "Name" FROM "Category" ORDER BY "Name"')
-        categories = [r[0] for r in cursor.fetchall()]
-        cursor.close()
-        conn.close()
-        _CATALOG_CACHE.update(at=now, products=products, categories=categories)
-    return {"products": _CATALOG_CACHE["products"], "categories": _CATALOG_CACHE["categories"]}
-
-
-def ordered_product_names(user_id: int) -> list[str]:
-    """Distinct product names this user has ordered - injected into the
-    sub-agent prompt so "the bread I bought" resolves without a tool call."""
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT DISTINCT "Product"."Name" FROM "Product" '
-        'JOIN "Order_Item" ON "Product"."Id" = "Order_Item"."ProductId" '
-        'JOIN "Orders" ON "Orders"."Id" = "Order_Item"."OrderId" '
-        'WHERE "Orders"."UserId" = %s ORDER BY "Product"."Name"',
-        (user_id,)
-    )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return [r[0] for r in rows]
-
-
-def _uid(config: RunnableConfig) -> int:
-    """The authenticated user's id, taken ONLY from the run config (set by the
-    API layer) - never from a model-supplied argument, so the model cannot
-    point a personal tool at another user's data."""
-    return int(config["configurable"]["user_id"])
-
-
-# NOTE: no longer bound to any agent - superseded by the in-prompt CATALOG
-# (catalog_snapshot / ordered_product_names above), which resolves names in
-# the same LLM call that picks the tool. Kept only for reference.
 @tool
-def get_all_ordered_products_names(user_id: int) -> list[str]:
+def get_all_ordered_products_names(user_id: int, category: str | None = None) -> list[str]:
     """Distinct product names this user has actually ordered. Use FIRST to
     resolve a casual product reference (e.g. 'my apples') to an exact name
-    before calling a follow-up tool - match it yourself against this list.
-    Empty list if the user has no orders."""
+    before calling a follow-up tool - match it yourself against this list,
+    then pass ONLY the matching name(s) onward.
+
+    Optional `category` narrows the list to ONE broad category. The store has
+    exactly three:
+      - 'Fruits'     - fresh fruit
+      - 'vegetables' - fresh vegetables
+      - 'Packages'   - everything packaged: dairy, bakery, beverages,
+                       pantry goods, snacks, frozen
+    Pass the string EXACTLY as spelled above (note 'vegetables' is lowercase).
+    Use it to cut the list down when the question is clearly about one of the
+    three (e.g. 'the milk I bought' -> category='Packages'). Omit it when the
+    question spans the whole order history or no category obviously applies.
+
+    Empty list if the user has no orders (or none in that category)."""
     conn = _get_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        'SELECT DISTINCT "Product"."Name" '
-        'FROM "Product" '
-        'JOIN "Order_Item" ON "Product"."Id" = "Order_Item"."ProductId" '
-        'JOIN "Orders" ON "Orders"."Id" = "Order_Item"."OrderId" '
-        'WHERE "Orders"."UserId" = %s',
-        (user_id,)
-    )
+    if category:
+        cursor.execute(
+            'SELECT DISTINCT "Product"."Name" '
+            'FROM "Product" '
+            'JOIN "Category" ON "Category"."Id" = "Product"."CategoryId" '
+            'JOIN "Order_Item" ON "Product"."Id" = "Order_Item"."ProductId" '
+            'JOIN "Orders" ON "Orders"."Id" = "Order_Item"."OrderId" '
+            'WHERE "Orders"."UserId" = %s AND "Category"."Name" = %s',
+            (user_id, category)
+        )
+    else:
+        cursor.execute(
+            'SELECT DISTINCT "Product"."Name" '
+            'FROM "Product" '
+            'JOIN "Order_Item" ON "Product"."Id" = "Order_Item"."ProductId" '
+            'JOIN "Orders" ON "Orders"."Id" = "Order_Item"."OrderId" '
+            'WHERE "Orders"."UserId" = %s',
+            (user_id,)
+        )
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -93,21 +65,20 @@ def get_all_ordered_products_names(user_id: int) -> list[str]:
 
 
 @tool
-def user_order_lookup(question: str, resolved_product_names: list[str] | None = None,
-                      config: RunnableConfig = None) -> str:
+def user_order_lookup(user_id: int, question: str, resolved_product_names: list[str] | None = None) -> str:
     """LAST RESORT for the authenticated user's own orders, order history,
     cart, addresses, or reviews they wrote - use only if no dedicated
     personal tool fits (see system prompt for the list). Writes and runs
     SQL on the fly, so prefer a dedicated tool whenever one applies.
 
-    If a product is referenced casually, pass the EXACT name(s) from the
-    CATALOG in your system prompt as resolved_product_names - never the
-    casual wording.
+    If a product is referenced casually, resolve it via
+    get_all_ordered_products_names first and pass the exact name(s) as
+    resolved_product_names - never the casual wording.
 
     Read-only: refuse any cancel/delete/modify request instead. Never use
     for general/store-wide questions - use general_sql_lookup for those.
     """
-    return answer_sql_specific_question(question, resolved_product_names, _uid(config))
+    return answer_sql_specific_question(question, resolved_product_names, user_id)
 
 @tool
 def general_sql_lookup(question: str, resolved_product_names: list[str] | None = None, page: int = 1) -> dict:
@@ -116,6 +87,9 @@ def general_sql_lookup(question: str, resolved_product_names: list[str] | None =
     dedicated general tool fits (see system prompt for the list). Writes
     and runs SQL on the fly; mainly for open-ended list/aggregate questions
     that don't match a dedicated tool, e.g. 'list all products'.
+
+    NOT for "what products are in category X" - resolve those with
+    get_all_product_names(category=...) and a dedicated tool instead.
 
     Paginated, 50/page - check has_more, call ONCE per question, and tell
     the customer if more results exist rather than auto-fetching more.
@@ -126,52 +100,47 @@ def general_sql_lookup(question: str, resolved_product_names: list[str] | None =
     """
     return answer_sql_general_question(question, resolved_product_names, page)
 
-# NOTE: no longer bound to any agent - superseded by the in-prompt CATALOG
-# (catalog_snapshot / ordered_product_names above), which resolves names in
-# the same LLM call that picks the tool. Kept only for reference.
 @tool
-def get_all_product_names(page: int = 1) -> dict:
+def get_all_product_names(page: int = 1, category: str | None = None) -> dict:
     """Store's catalog product names - PAGINATED, 50/page. Use FIRST to
     resolve a casual product reference (e.g. 'apples') to an exact name -
-    match it yourself against the returned names. See system prompt's
-    PAGINATION section for the search-across-pages policy (keep paging
-    with page+1 until a match or has_more is False - don't guess)."""
-    page_size = 50   
-    offset = (page - 1) * page_size
+    match it yourself against the returned names, then pass ONLY the
+    matching name(s) onward to the tool that answers the question.
 
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT DISTINCT "Name" FROM "Product" ORDER BY "Name" LIMIT %s OFFSET %s',
-        (page_size + 1, offset)
-    )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
+    Optional `category` narrows the catalog to ONE broad category. The store
+    has exactly three:
+      - 'Fruits'     - fresh fruit
+      - 'vegetables' - fresh vegetables
+      - 'Packages'   - everything packaged: dairy, bakery, beverages,
+                       pantry goods, snacks, frozen
+    Pass the string EXACTLY as spelled above (note 'vegetables' is lowercase).
+    Prefer filtering whenever the question points at one of the three - e.g.
+    'what dairy do you have' -> category='Packages', then pick out the milk
+    /cheese/yoghurt names yourself. It returns far fewer names, so you
+    usually avoid paging entirely. Omit it for catalog-wide questions
+    ('list all products', 'do you sell umbrellas?').
 
-    has_more = len(rows) > page_size
-    names = [row[0] for row in rows[:page_size]]
-
-    return {"items": names, "page": page, "has_more": has_more}
-
-# NOTE: no longer bound to any agent - superseded by the in-prompt CATALOG
-# (catalog_snapshot / ordered_product_names above), which resolves names in
-# the same LLM call that picks the tool. Kept only for reference.
-@tool
-def get_all_category_names(page: int = 1) -> dict:
-    """Store's category names - PAGINATED, 50/page. Use FIRST to resolve a
-    casual category reference (e.g. 'dairy') to an exact name before
-    calling get_products_by_category. See system prompt's PAGINATION
-    section for the search-across-pages policy."""
+    Returns names ONLY - no prices. For price/stock/description, pass the
+    resolved names to get_product_details. See the system prompt's
+    PAGINATION section for the search-across-pages policy."""
     page_size = 50
     offset = (page - 1) * page_size
 
     conn = _get_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        'SELECT DISTINCT "Name" FROM "Category" ORDER BY "Name" LIMIT %s OFFSET %s',
-        (page_size + 1, offset)
-    )
+    if category:
+        cursor.execute(
+            'SELECT DISTINCT "Product"."Name" FROM "Product" '
+            'JOIN "Category" ON "Category"."Id" = "Product"."CategoryId" '
+            'WHERE "Category"."Name" = %s '
+            'ORDER BY "Product"."Name" LIMIT %s OFFSET %s',
+            (category, page_size + 1, offset)
+        )
+    else:
+        cursor.execute(
+            'SELECT DISTINCT "Name" FROM "Product" ORDER BY "Name" LIMIT %s OFFSET %s',
+            (page_size + 1, offset)
+        )
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -180,6 +149,11 @@ def get_all_category_names(page: int = 1) -> dict:
     names = [row[0] for row in rows[:page_size]]
 
     return {"items": names, "page": page, "has_more": has_more}
+
+# NOTE: get_all_category_names was removed - the store now has exactly three
+# fixed categories ('Fruits', 'vegetables', 'Packages'), so listing them from
+# the DB was a wasted tool call + round trip. They are named directly in the
+# docstrings of the two name-resolution tools above and in the system prompt.
 
 
 # ============================================
@@ -195,13 +169,12 @@ def get_all_category_names(page: int = 1) -> dict:
 # ============================================
 
 @tool
-def get_order_by_recency(offset: int = 0, config: RunnableConfig = None) -> dict:
+def get_order_by_recency(user_id: int, offset: int = 0) -> dict:
     """ONE of the user's own orders by recency: offset=0 is most recent,
     1 is the one before that, etc. Returns status, total, payment method,
     dates, voucher code, and line items. Use for 'last order status',
     'what did I order before that' - map phrasing to the right offset.
     For multiple orders at once, use list_my_orders instead."""
-    user_id = _uid(config)
     conn = _get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -246,11 +219,10 @@ def get_order_by_recency(offset: int = 0, config: RunnableConfig = None) -> dict
 
 
 @tool
-def list_my_orders(page: int = 1, config: RunnableConfig = None) -> dict:
+def list_my_orders(user_id: int, page: int = 1) -> dict:
     """Paginated summary list of the user's own past orders (id, status,
     total, date) - no line items. Use for 'show me my order history'. For
     one order's full detail, use get_order_by_recency instead."""
-    user_id = _uid(config)
     page_size = 50
     offset = (page - 1) * page_size
 
@@ -274,10 +246,9 @@ def list_my_orders(page: int = 1, config: RunnableConfig = None) -> dict:
 
 
 @tool
-def get_cart_contents(config: RunnableConfig = None) -> list[dict]:
+def get_cart_contents(user_id: int) -> list[dict]:
     """Everything in the user's cart - product, quantity, price. Use for
     'what's in my cart'. Empty list if the cart is empty."""
-    user_id = _uid(config)
     conn = _get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -295,10 +266,9 @@ def get_cart_contents(config: RunnableConfig = None) -> list[dict]:
 
 
 @tool
-def get_saved_addresses(config: RunnableConfig = None) -> list[str]:
+def get_saved_addresses(user_id: int) -> list[str]:
     """The user's own saved delivery addresses. Use for 'what's my delivery
     address'. Empty list if none are saved."""
-    user_id = _uid(config)
     conn = _get_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT "Address" FROM "UserAddress" WHERE "UserId" = %s', (user_id,))
@@ -309,12 +279,11 @@ def get_saved_addresses(config: RunnableConfig = None) -> list[str]:
 
 
 @tool
-def get_my_reviews(resolved_product_names: list[str] | None = None, config: RunnableConfig = None) -> list[dict]:
+def get_my_reviews(user_id: int, resolved_product_names: list[str] | None = None) -> list[dict]:
     """Reviews the user themselves wrote - product, rating, comment, date.
-    To filter to one product, pass its EXACT name from the CATALOG in your
-    system prompt as resolved_product_names; leave None for all.
+    Resolve a casual product name via get_all_ordered_products_names first
+    and pass it as resolved_product_names to filter; leave None for all.
     Only ever this user's own reviews - cannot look up another person's."""
-    user_id = _uid(config)
     conn = _get_connection()
     cursor = conn.cursor()
     if resolved_product_names:
@@ -340,38 +309,17 @@ def get_my_reviews(resolved_product_names: list[str] | None = None, config: Runn
 
 
 @tool
-def get_my_most_ordered_products(limit: int = 3, config: RunnableConfig = None) -> list[dict]:
-    """The products this user has ordered MOST, ranked by total quantity
-    across all their orders (ties broken by how many orders contained the
-    product). `limit` = how many to return (default 3; use 1 for "THE item
-    I buy most"). Use for 'what do I order most', 'my most bought item',
-    'what do I usually buy'. Empty list if the user has no orders."""
-    user_id = _uid(config)
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT "Product"."Name", SUM("Order_Item"."Quantity") AS "Qty", '
-        'COUNT(DISTINCT "Orders"."Id") AS "OrdersContaining" '
-        'FROM "Order_Item" '
-        'JOIN "Orders" ON "Orders"."Id" = "Order_Item"."OrderId" '
-        'JOIN "Product" ON "Product"."Id" = "Order_Item"."ProductId" '
-        'WHERE "Orders"."UserId" = %s '
-        'GROUP BY "Product"."Name" ORDER BY "Qty" DESC, "OrdersContaining" DESC LIMIT %s',
-        (user_id, limit)
-    )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return [{"product": r[0], "total_quantity": r[1], "orders_containing": r[2]} for r in rows]
-
-
-@tool
 def get_product_details(resolved_product_names: list[str]) -> list[dict]:
     """Catalog details for named product(s): price, sale price, discount,
     stock, brand, description, ingredients, active status. Covers
     price/stock/discount/ingredient/'do you sell X' questions in one tool.
-    Pass EXACT name(s) from the CATALOG in your system prompt. Empty list =
-    not found - don't guess."""
+
+    Resolve names via get_all_product_names first (pass its `category` arg
+    when the question points at Fruits / vegetables / Packages). This is also
+    how you answer "what <category> do you have and what do they cost":
+    resolve the names in that category, then pass them all here.
+
+    Empty list = not found - don't guess."""
     conn = _get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -393,30 +341,11 @@ def get_product_details(resolved_product_names: list[str]) -> list[dict]:
     ]
 
 
-@tool
-def get_products_by_category(resolved_category_names: list[str], page: int = 1) -> dict:
-    """Paginated list of active products in named categor(y/ies). Use for
-    'what dairy products do you have'. Pass the EXACT category name(s) from
-    the CATALOG in your system prompt as resolved_category_names."""
-    page_size = 50
-    offset = (page - 1) * page_size
-
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT "Product"."Name", "Product"."Price", "Product"."SalePrice" '
-        'FROM "Product" JOIN "Category" ON "Category"."Id" = "Product"."CategoryId" '
-        'WHERE "Category"."Name" = ANY(%s) AND "Product"."isActive" = true '
-        'ORDER BY "Product"."Name" LIMIT %s OFFSET %s',
-        (resolved_category_names, page_size + 1, offset)
-    )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    has_more = len(rows) > page_size
-    items = [{"name": r[0], "price": r[1], "sale_price": r[2]} for r in rows[:page_size]]
-    return {"items": items, "page": page, "has_more": has_more}
+# NOTE: get_products_by_category was removed. Category questions are now
+# answered by narrowing the name list instead: call get_all_product_names with
+# category='Fruits' | 'vegetables' | 'Packages', pick the relevant names, then
+# pass those to get_product_details (prices/stock) or whichever tool answers
+# the actual question.
 
 
 @tool
@@ -490,9 +419,9 @@ def get_top_rated_products(limit: int = 5) -> list[dict]:
 def get_product_reviews(resolved_product_names: list[str], page: int = 1) -> dict:
     """Paginated public reviews (rating, comment, date) for named
     product(s), most recent first. Use for 'what do people think of X',
-    'average rating for X' (compute it yourself from the ratings). Pass
-    EXACT name(s) from the CATALOG in your system prompt. Never includes who
-    wrote a review. For the user's OWN reviews, use get_my_reviews instead."""
+    'average rating for X' (compute it yourself from the ratings). Resolve
+    names via get_all_product_names first. Never includes who wrote a
+    review. For the user's OWN reviews, use get_my_reviews instead."""
     page_size = 50
     offset = (page - 1) * page_size
 
@@ -552,13 +481,15 @@ async def sql_agent_tool(question: str, config: RunnableConfig) -> str:
         {"messages": [{"role": "user", "content": question}]},
         config=sub_config
     )
-    return result["messages"][-1].content
+    # .text (not .content) - this tool is typed to return str, but a Gemini
+    # sub-agent llm returns content as a list of blocks, not a plain string.
+    return result["messages"][-1].text
 @tool
 def search_policies_and_faqs(question: str) -> str:
-    """Search the store's FAQs and policies - covers returns, refunds,
-    shipping, delivery, and payment methods. It holds NO product or account
-    data: anything about a specific product (including its description),
-    an order, or an account goes to the SQL tools instead."""
+    """Search FAQs, policies, and product descriptions - covers returns,
+    shipping, delivery, payment methods, and general product details. Do NOT
+    use this for order-specific or account-specific data (use the order/cart
+    tools for that)."""
     return adaptive_corrective_answer(question)
 
 

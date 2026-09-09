@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_deepseek import ChatDeepSeek
-from langchain_together import ChatTogether
+from langchain_google_genai import ChatGoogleGenerativeAI
 from pipeline import (
     fusion_retrieval_chain,
     generation_chain,
@@ -18,14 +18,9 @@ llm = ChatDeepSeek(
     temperature=0,
     extra_body={"thinking": {"type": "disabled"}}
 )
-
-# Fast model for cheap steps: grading and rewriting.
-# Swapped from Groq (8,000 TPM ceiling) to Together's GLM-5.3-Flash.
-fast_llm = ChatTogether(
-    model="zai-org/GLM-5.3-Flash",
-    temperature=0,
-    reasoning_effort="low",  # grading/rewriting need no chain-of-thought
-)
+small_llm = ChatGoogleGenerativeAI(model="gemma-4-26b-a4b-it", temperature=0)
+# Fast model for cheap steps: grading and rewriting
+fast_llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
 
 # ============================================
 # STEP 1: Adaptive routing - classify the retrieval strategy needed
@@ -120,11 +115,15 @@ def grade_chunks(question: str, chunks: list) -> list:
 # ============================================
 rewrite_template = """Rewrite this question to be clearer and more specific for document retrieval.
 
+Reply with ONLY the rewritten question, on a single line. No preamble, no
+alternatives or options, no explanation, no markdown, no quotes - the reply
+is embedded verbatim as a search query, so anything extra corrupts it.
+
 Original: {question}
 Rewritten:"""
 
 rewrite_prompt = ChatPromptTemplate.from_template(rewrite_template)
-rewrite_chain = rewrite_prompt | fast_llm | StrOutputParser()
+rewrite_chain = rewrite_prompt | small_llm | StrOutputParser()
 
 
 def rewrite_query(question: str) -> str:

@@ -1,13 +1,14 @@
 from typing import Annotated, Sequence, TypedDict
 from langchain_core.messages.utils import count_tokens_approximately
 from dotenv import load_dotenv
-from langchain_core.messages import BaseMessage, ToolMessage, SystemMessage, RemoveMessage, AIMessage
-from langchain_together import ChatTogether
+from langchain_core.messages import BaseMessage, ToolMessage, SystemMessage, RemoveMessage, HumanMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import ToolNode
 import os
 from IPython.display import Image, display
+from pipeline import retriever
 from tools import (
     sql_agent_tool,
     search_policies_and_faqs,
@@ -33,16 +34,9 @@ tools = [
     search_policies_and_faqs,
 ]
 
-# Swapped from Groq to Together's GLM-5.3-Flash - Groq's gpt-oss-120b hit an
-# 8,000 TPM rate-limit ceiling causing 10-60s stalls under this agent's real
-# token load; GLM-5.3-Flash held steady under equivalent load in testing,
-# routes tools correctly, and has a much larger (1M) context window.
-llm = ChatTogether(
-    model="zai-org/GLM-5.3-Flash",
+llm = ChatGoogleGenerativeAI(
+    model="gemini-3.1-flash-lite",
     temperature=0,
-    reasoning_effort="low",  # GLM-5.3-Flash reasons on EVERY call by default
-                            # (~250 reasoning tokens per 6 calls). "low" drops that
-                            # to 0 and cut median latency 1.03s -> 0.79s in testing.
 ).bind_tools(tools)
 
 AGENT_SYSTEM_PROMPT = """You are a customer support assistant for a grocery
@@ -66,17 +60,27 @@ You have exactly two tools:
   SQL generation, and pagination internally. Give it the customer's
   question in plain language and use its returned answer directly - do
   NOT try to reason about SQL, pagination, or product matching yourself.
-  Never write the customer's user id into the question you send it - the
-  id is attached automatically.
 
 - search_policies_and_faqs -> use for questions about store policies,
-  FAQs, returns, shipping, delivery windows, or payment methods. It has no
-  product data at all - anything about a specific product, including its
-  description, goes to sql_agent_tool.
+  FAQs, returns, shipping, delivery windows, payment methods, or general
+  product descriptions that aren't about live stock/price/order data.
 
 If a question spans both (e.g. "is my order eligible for a refund, and
 what's your refund policy?"), call both tools and combine their answers
 into one coherent reply.
+
+===========================================================
+ONE CALL PER TOOL - NEVER RE-ASK A TOOL THAT CAME BACK EMPTY
+===========================================================
+Call each tool AT MOST ONCE per customer message. The policy documents and
+the database do not change between calls within a single turn, so asking the
+same tool again in different words returns the same thing - it only makes
+the customer wait longer.
+
+If a tool replies "I don't know", returns nothing useful, or only partly
+covers the question, that IS your result. Say plainly what you do and do not
+have, then stop. Never reword the question and call the same tool again
+hoping for a better answer.
 
 ===========================================================
 HANDLING TRUNCATED / PAGINATED RESULTS
@@ -119,6 +123,32 @@ policies, etc.) - do not attempt to answer the out-of-scope request itself,
 even partially.
 """
 
+# Appended to the system prompt on the FIRST turn only. Vector retrieval costs
+# ~0.07s and zero LLM calls, so the top-k policy chunks are fetched up front on
+# every request. When they already answer the question, the agent replies in a
+# single LLM call instead of round-tripping through search_policies_and_faqs
+# (which itself costs a classify + a generate call). Measured: ~3.7s -> ~1.1s
+# on policy questions. Tool calls for live store/account data are unaffected.
+PREFETCHED_CONTEXT_BLOCK = """
+
+===========================================================
+PRE-FETCHED POLICY / FAQ CONTEXT
+===========================================================
+The most relevant store policy and FAQ excerpts for this customer's question
+have already been retrieved and appear below.
+
+- If they answer the question, answer DIRECTLY from them - do NOT call
+  search_policies_and_faqs, it would only re-read the same documents.
+- Still call sql_agent_tool for anything needing live store or account data
+  (products, prices, stock, orders, cart, reviews, vouchers) - these excerpts
+  never contain that.
+- If the excerpts do not actually cover what was asked, say so plainly, or
+  call search_policies_and_faqs for a deeper search. Never stretch a nearby
+  policy to fit a question it does not answer.
+
+{context}
+"""
+
 
 def summarize_old_messages(state: AgentState):
     messages = state["messages"]
@@ -131,10 +161,12 @@ def summarize_old_messages(state: AgentState):
         return [], list(to_keep)
 
     conversation_text = "\n".join(f"{m.type}: {m.content}" for m in to_summarize)
+    # .text (not .content) - Gemini returns content as a list of blocks
+    # (text + thought signature), not a plain string.
     summary_text = llm.invoke(
         f"Summarize this conversation history concisely and never remove one "
         f"of the product names that the user talked about:\n\n{conversation_text}"
-    ).content
+    ).text
     summary_message = SystemMessage(content=f"[Earlier conversation summary]: {summary_text}")
 
     removals = [RemoveMessage(id=m.id) for m in to_summarize] + [RemoveMessage(id=m.id) for m in to_keep]
@@ -156,6 +188,23 @@ def summarize_chat(config: dict, state: AgentState):
 async def Agent(state: AgentState, config) -> AgentState:
     user_id = config["configurable"]["user_id"]
     formatted_prompt = AGENT_SYSTEM_PROMPT.format(user_id=user_id)
+
+    # Pre-fetch policy context on the FIRST turn only. On later turns a tool has
+    # already answered, so the excerpts are dead weight (and re-retrieving would
+    # just burn tokens on every loop iteration).
+    is_first_turn = not any(isinstance(m, ToolMessage) for m in state["messages"])
+    if is_first_turn:
+        question = next(
+            (m.content for m in reversed(state["messages"])
+             if isinstance(m, HumanMessage) or getattr(m, "type", None) == "human"),
+            None,
+        )
+        if question:
+            docs = retriever.invoke(str(question))
+            if docs:
+                context = "\n\n".join(d.page_content for d in docs)
+                formatted_prompt += PREFETCHED_CONTEXT_BLOCK.format(context=context)
+
     system_message = SystemMessage(content=formatted_prompt)
     full_message = None
     async for chunk in llm.astream([system_message] + list(state["messages"])):
@@ -168,29 +217,9 @@ def should_continue(state: AgentState):
     return "continue" if last_message.tool_calls else "end"
 
 
-def after_tools(state: AgentState):
-    """SQL-only turn -> the sub-agent's answer is already customer-ready, so
-    skip the outer model's re-synthesis call. Any other shape (FAQ, or a
-    mixed turn that called both tools in parallel) still needs the outer
-    model to combine/frame the results. The decision reads the tool calls
-    the model already made - no extra LLM call."""
-    ai = next(m for m in reversed(state["messages"]) if getattr(m, "tool_calls", None))
-    names = [tc["name"] for tc in ai.tool_calls]
-    return "passthrough" if names == ["sql_agent_tool"] else "synthesize"
-
-
-def passthrough(state: AgentState):
-    """Promote the sub-agent's answer to the final assistant message without
-    an LLM call - keeps conversation history well-formed (tool call ->
-    tool result -> assistant), which some providers require."""
-    return {"messages": [AIMessage(content=state["messages"][-1].content)]}
-
-
 graph = StateGraph(AgentState)
 graph.add_node("ReAct_agent", Agent)
 graph.add_node("tools", ToolNode(tools))
-graph.add_node("passthrough", passthrough)
 graph.add_edge(START, "ReAct_agent")
 graph.add_conditional_edges("ReAct_agent", should_continue, {"continue": "tools", "end": END})
-graph.add_conditional_edges("tools", after_tools, {"synthesize": "ReAct_agent", "passthrough": "passthrough"})
-graph.add_edge("passthrough", END)
+graph.add_edge("tools", "ReAct_agent")

@@ -1,18 +1,23 @@
 import asyncio
 import sys
-
-# psycopg (v3, used by AsyncPostgresSaver) can't run async on Windows' default
-# ProactorEventLoop. uvicorn sets the selector policy itself, but anything
-# else that drives this app (tests, scripts, `python app.py`) would crash.
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, BackgroundTasks
+from langchain_google_genai import ChatGoogleGenerativeAI
 from schemas import QuestionRequest, AnswerResponse, TerminationRequest, TerminationResponse
 from agent_graph import graph, DB_URI, summarize_chat
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
+# psycopg's async mode requires a SelectorEventLoop, but Windows defaults the
+# main thread to ProactorEventLoop - which raises psycopg.InterfaceError the
+# moment AsyncPostgresSaver opens its connection in lifespan(), below. Must
+# be set before uvicorn/asyncio picks a loop, so this runs at import time.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# For the /test endpoint below - hits Gemini 2.5 Flash directly, bypassing
+# the graph, so it isolates the raw model from tool routing/prompting.
+llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
+fast_llm = ChatGoogleGenerativeAI(model="gemma-4-26b-a4b-it", temperature=0)
 
 # ============================================
 # Lifespan: opens the checkpoint database connection ONCE, when the server
@@ -50,7 +55,10 @@ async def chat(request: QuestionRequest, background_tasks: BackgroundTasks):
         {"messages": [{"role": "user", "content": request.question}]},
         config=config
     )
-    answer = result["messages"][-1].content
+    # .text (not .content) - Gemini returns content as a list of blocks
+    # (text + thought signature), not a plain string, which fails the
+    # `answer: str` response schema.
+    answer = result["messages"][-1].text
 
     background_tasks.add_task(summarize_chat, config, result)
 
@@ -66,3 +74,8 @@ async def terminate_session(request: TerminationRequest):
     checkpointer = app.state.checkpointer
     await checkpointer.adelete_thread(thread_id)
     return {"status": "terminated", "thread_id": thread_id}
+
+@app.post("/test", response_model=AnswerResponse)
+async def test(request: QuestionRequest):
+    result = await llm.ainvoke(request.question)
+    return {"question": request.question, "answer": result.text}
