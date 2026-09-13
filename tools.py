@@ -1,21 +1,15 @@
-import os
-import psycopg2
-from dotenv import load_dotenv
 from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from db import connection, fetch_all, fetch_on, placeholders
 from A_C_rag import adaptive_corrective_answer
 from text_to_sql import answer_sql_specific_question, answer_sql_general_question
-from langchain_core.runnables import RunnableConfig
-load_dotenv()
 
+# All queries below are T-SQL against the backend's SQL Server (see db.py).
+# Table names follow the backend's EF Core schema: Products, Categories,
+# [Order] (reserved word - always bracketed), OrderItem, Cart, CartItem,
+# ProductReviews, UserAddresses, Tags, ProductTags.
 
-def _get_connection():
-    return psycopg2.connect(
-        dbname=os.getenv("DATABASE_NAME"),
-        user=os.getenv("DATABASE_USERNAME"),
-        password=os.getenv("DATABASE_PASSWORD"),
-        host=os.getenv("DATABASE_HOSTNAME"),
-        port=os.getenv("DATABASE_PORT"),
-    )
+PAGE_SIZE = 50
 
 
 @tool
@@ -37,31 +31,18 @@ def get_all_ordered_products_names(user_id: int, category: str | None = None) ->
     question spans the whole order history or no category obviously applies.
 
     Empty list if the user has no orders (or none in that category)."""
-    conn = _get_connection()
-    cursor = conn.cursor()
+    sql = (
+        "SELECT DISTINCT p.Name FROM Products p "
+        "JOIN OrderItem oi ON oi.ProductId = p.Id "
+        "JOIN [Order] o ON o.Id = oi.OrderId "
+    )
     if category:
-        cursor.execute(
-            'SELECT DISTINCT "Product"."Name" '
-            'FROM "Product" '
-            'JOIN "Category" ON "Category"."Id" = "Product"."CategoryId" '
-            'JOIN "Order_Item" ON "Product"."Id" = "Order_Item"."ProductId" '
-            'JOIN "Orders" ON "Orders"."Id" = "Order_Item"."OrderId" '
-            'WHERE "Orders"."UserId" = %s AND "Category"."Name" = %s',
-            (user_id, category)
-        )
+        sql += "JOIN Categories c ON c.Id = p.CategoryId WHERE o.UserId = ? AND c.Name = ?"
+        rows = fetch_all(sql, (user_id, category))
     else:
-        cursor.execute(
-            'SELECT DISTINCT "Product"."Name" '
-            'FROM "Product" '
-            'JOIN "Order_Item" ON "Product"."Id" = "Order_Item"."ProductId" '
-            'JOIN "Orders" ON "Orders"."Id" = "Order_Item"."OrderId" '
-            'WHERE "Orders"."UserId" = %s',
-            (user_id,)
-        )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return [row[0] for row in rows]
+        sql += "WHERE o.UserId = ?"
+        rows = fetch_all(sql, (user_id,))
+    return [r[0] for r in rows]
 
 
 @tool
@@ -80,10 +61,11 @@ def user_order_lookup(user_id: int, question: str, resolved_product_names: list[
     """
     return answer_sql_specific_question(question, resolved_product_names, user_id)
 
+
 @tool
 def general_sql_lookup(question: str, resolved_product_names: list[str] | None = None, page: int = 1) -> dict:
     """LAST RESORT for a general, store-wide question (products, categories,
-    reviews by product, vouchers) not tied to any user - use only if no
+    reviews by product) not tied to any user - use only if no
     dedicated general tool fits (see system prompt for the list). Writes
     and runs SQL on the fly; mainly for open-ended list/aggregate questions
     that don't match a dedicated tool, e.g. 'list all products'.
@@ -95,10 +77,11 @@ def general_sql_lookup(question: str, resolved_product_names: list[str] | None =
     the customer if more results exist rather than auto-fetching more.
 
     Never use for the logged-in user's own data (use a personal tool
-    instead), and never to expose one specific named person's reviews or
-    voucher usage - refuse those instead of attempting them.
+    instead), and never to expose one specific named person's reviews -
+    refuse those instead of attempting them.
     """
     return answer_sql_general_question(question, resolved_product_names, page)
+
 
 @tool
 def get_all_product_names(page: int = 1, category: str | None = None) -> dict:
@@ -123,37 +106,29 @@ def get_all_product_names(page: int = 1, category: str | None = None) -> dict:
     Returns names ONLY - no prices. For price/stock/description, pass the
     resolved names to get_product_details. See the system prompt's
     PAGINATION section for the search-across-pages policy."""
-    page_size = 50
-    offset = (page - 1) * page_size
-
-    conn = _get_connection()
-    cursor = conn.cursor()
+    offset = (page - 1) * PAGE_SIZE
     if category:
-        cursor.execute(
-            'SELECT DISTINCT "Product"."Name" FROM "Product" '
-            'JOIN "Category" ON "Category"."Id" = "Product"."CategoryId" '
-            'WHERE "Category"."Name" = %s '
-            'ORDER BY "Product"."Name" LIMIT %s OFFSET %s',
-            (category, page_size + 1, offset)
+        rows = fetch_all(
+            "SELECT p.Name FROM Products p "
+            "JOIN Categories c ON c.Id = p.CategoryId "
+            "WHERE c.Name = ? "
+            "ORDER BY p.Name OFFSET ? ROWS FETCH NEXT ? ROWS ONLY",
+            (category, offset, PAGE_SIZE + 1),
         )
     else:
-        cursor.execute(
-            'SELECT DISTINCT "Name" FROM "Product" ORDER BY "Name" LIMIT %s OFFSET %s',
-            (page_size + 1, offset)
+        rows = fetch_all(
+            "SELECT Name FROM Products "
+            "ORDER BY Name OFFSET ? ROWS FETCH NEXT ? ROWS ONLY",
+            (offset, PAGE_SIZE + 1),
         )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
+    has_more = len(rows) > PAGE_SIZE
+    return {"items": [r[0] for r in rows[:PAGE_SIZE]], "page": page, "has_more": has_more}
 
-    has_more = len(rows) > page_size
-    names = [row[0] for row in rows[:page_size]]
 
-    return {"items": names, "page": page, "has_more": has_more}
-
-# NOTE: get_all_category_names was removed - the store now has exactly three
-# fixed categories ('Fruits', 'vegetables', 'Packages'), so listing them from
-# the DB was a wasted tool call + round trip. They are named directly in the
-# docstrings of the two name-resolution tools above and in the system prompt.
+# NOTE: get_all_category_names was removed - the store has exactly three fixed
+# categories ('Fruits', 'vegetables', 'Packages'), named directly in the
+# docstrings above and in the system prompt, so listing them from the DB was a
+# wasted tool call.
 
 
 # ============================================
@@ -171,111 +146,84 @@ def get_all_product_names(page: int = 1, category: str | None = None) -> dict:
 @tool
 def get_order_by_recency(user_id: int, offset: int = 0) -> dict:
     """ONE of the user's own orders by recency: offset=0 is most recent,
-    1 is the one before that, etc. Returns status, total, payment method,
-    dates, voucher code, and line items. Use for 'last order status',
+    1 is the one before that, etc. Returns order number, status, total,
+    delivery address, dates, and line items. Use for 'last order status',
     'what did I order before that' - map phrasing to the right offset.
     For multiple orders at once, use list_my_orders instead."""
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT "Orders"."Id", "Orders"."Status", "Orders"."TotalAmount", '
-        '"Orders"."PaymentMethod", "Orders"."CreationDate", "Orders"."DeliveryDate", '
-        '"Voucher"."Code" '
-        'FROM "Orders" '
-        'LEFT JOIN "Voucher" ON "Voucher"."VoucherId" = "Orders"."VoucherId" '
-        'WHERE "Orders"."UserId" = %s '
-        'ORDER BY "Orders"."CreationDate" DESC '
-        'LIMIT 1 OFFSET %s',
-        (user_id, offset)
-    )
-    row = cursor.fetchone()
-    if row is None:
-        cursor.close()
-        conn.close()
-        return {"found": False, "message": "No order found at that position - the user may not have that many orders."}
+    # Both queries share one connection - opening a second one to the remote
+    # server would cost ~0.3s more than the query itself.
+    with connection() as conn:
+        rows = fetch_on(
+            conn,
+            "SELECT Id, OrderNumber, Status, TotalAmount, Address, CreationDate, DeliveryTime "
+            "FROM [Order] WHERE UserId = ? "
+            "ORDER BY CreationDate DESC OFFSET ? ROWS FETCH NEXT 1 ROWS ONLY",
+            (user_id, offset),
+        )
+        if not rows:
+            return {"found": False, "message": "No order found at that position - the user may not have that many orders."}
 
-    order_id, status, total, payment_method, created, delivered, voucher_code = row
-    cursor.execute(
-        'SELECT "Product"."Name", "Order_Item"."Quantity", "Order_Item"."UnitPrice" '
-        'FROM "Order_Item" JOIN "Product" ON "Product"."Id" = "Order_Item"."ProductId" '
-        'WHERE "Order_Item"."OrderId" = %s',
-        (order_id,)
-    )
-    items = [{"product": r[0], "quantity": r[1], "unit_price": r[2]} for r in cursor.fetchall()]
-    cursor.close()
-    conn.close()
-
+        order_id, order_number, status, total, address, created, delivery = rows[0]
+        # OrderItem stores the product name at time of purchase - no join needed.
+        item_rows = fetch_on(
+            conn,
+            "SELECT ProductName, Quantity, UnitPrice FROM OrderItem WHERE OrderId = ?",
+            (order_id,),
+        )
     return {
         "found": True,
         "order_id": order_id,
+        "order_number": order_number,
         "status": status,
         "total_amount": total,
-        "payment_method": payment_method,
+        "delivery_address": address,
         "creation_date": str(created) if created else None,
-        "delivery_date": str(delivered) if delivered else None,
-        "voucher_code": voucher_code,
-        "items": items,
+        "delivery_time": str(delivery) if delivery else None,
+        "items": [{"product": r[0], "quantity": r[1], "unit_price": r[2]} for r in item_rows],
     }
 
 
 @tool
 def list_my_orders(user_id: int, page: int = 1) -> dict:
-    """Paginated summary list of the user's own past orders (id, status,
-    total, date) - no line items. Use for 'show me my order history'. For
-    one order's full detail, use get_order_by_recency instead."""
-    page_size = 50
-    offset = (page - 1) * page_size
-
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT "Id", "Status", "TotalAmount", "CreationDate" FROM "Orders" '
-        'WHERE "UserId" = %s ORDER BY "CreationDate" DESC LIMIT %s OFFSET %s',
-        (user_id, page_size + 1, offset)
+    """Paginated summary list of the user's own past orders (order number,
+    status, total, date) - no line items. Use for 'show me my order
+    history'. For one order's full detail, use get_order_by_recency instead."""
+    offset = (page - 1) * PAGE_SIZE
+    rows = fetch_all(
+        "SELECT Id, OrderNumber, Status, TotalAmount, CreationDate FROM [Order] "
+        "WHERE UserId = ? ORDER BY CreationDate DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY",
+        (user_id, offset, PAGE_SIZE + 1),
     )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    has_more = len(rows) > page_size
+    has_more = len(rows) > PAGE_SIZE
     orders = [
-        {"order_id": r[0], "status": r[1], "total_amount": r[2], "creation_date": str(r[3])}
-        for r in rows[:page_size]
+        {"order_id": r[0], "order_number": r[1], "status": r[2],
+         "total_amount": r[3], "creation_date": str(r[4])}
+        for r in rows[:PAGE_SIZE]
     ]
     return {"items": orders, "page": page, "has_more": has_more}
 
 
 @tool
 def get_cart_contents(user_id: int) -> list[dict]:
-    """Everything in the user's cart - product, quantity, price. Use for
+    """Everything in the user's cart - product, quantity, unit price. Use for
     'what's in my cart'. Empty list if the cart is empty."""
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT "Product"."Name", "Cart_Item"."Quantity", "Product"."Price", "Product"."SalePrice" '
-        'FROM "Cart" '
-        'JOIN "Cart_Item" ON "Cart_Item"."CartId" = "Cart"."Id" '
-        'JOIN "Product" ON "Product"."Id" = "Cart_Item"."ProductId" '
-        'WHERE "Cart"."UserId" = %s',
-        (user_id,)
+    rows = fetch_all(
+        "SELECT p.Name, ci.Quantity, ci.UnitPrice FROM Cart c "
+        "JOIN CartItem ci ON ci.CartId = c.Id "
+        "JOIN Products p ON p.Id = ci.ProductId "
+        "WHERE c.UserId = ?",
+        (user_id,),
     )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return [{"product": r[0], "quantity": r[1], "price": r[2], "sale_price": r[3]} for r in rows]
+    return [{"product": r[0], "quantity": r[1], "unit_price": r[2]} for r in rows]
 
 
 @tool
 def get_saved_addresses(user_id: int) -> list[str]:
-    """The user's own saved delivery addresses. Use for 'what's my delivery
-    address'. Empty list if none are saved."""
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT "Address" FROM "UserAddress" WHERE "UserId" = %s', (user_id,))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return [row[0] for row in rows]
+    """The user's own saved delivery addresses. Use for 'what's my saved
+    address'. Empty list if none are saved - in that case the address used
+    for a particular order is available via get_order_by_recency."""
+    rows = fetch_all("SELECT Location FROM UserAddresses WHERE UserId = ?", (user_id,))
+    return [r[0] for r in rows]
 
 
 @tool
@@ -284,35 +232,22 @@ def get_my_reviews(user_id: int, resolved_product_names: list[str] | None = None
     Resolve a casual product name via get_all_ordered_products_names first
     and pass it as resolved_product_names to filter; leave None for all.
     Only ever this user's own reviews - cannot look up another person's."""
-    conn = _get_connection()
-    cursor = conn.cursor()
+    sql = (
+        "SELECT p.Name, r.Rating, r.Comment, r.CreatedAt FROM ProductReviews r "
+        "JOIN Products p ON p.Id = r.ProductId WHERE r.UserId = ? "
+    )
+    params: tuple = (user_id,)
     if resolved_product_names:
-        cursor.execute(
-            'SELECT "Product"."Name", "Review"."Rating", "Review"."Comment", "Review"."CreationDate" '
-            'FROM "Review" JOIN "Product" ON "Product"."Id" = "Review"."ProductId" '
-            'WHERE "Review"."UserId" = %s AND "Product"."Name" = ANY(%s) '
-            'ORDER BY "Review"."CreationDate" DESC',
-            (user_id, resolved_product_names)
-        )
-    else:
-        cursor.execute(
-            'SELECT "Product"."Name", "Review"."Rating", "Review"."Comment", "Review"."CreationDate" '
-            'FROM "Review" JOIN "Product" ON "Product"."Id" = "Review"."ProductId" '
-            'WHERE "Review"."UserId" = %s '
-            'ORDER BY "Review"."CreationDate" DESC',
-            (user_id,)
-        )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
+        sql += f"AND p.Name IN ({placeholders(resolved_product_names)}) "
+        params += tuple(resolved_product_names)
+    rows = fetch_all(sql + "ORDER BY r.CreatedAt DESC", params)
     return [{"product": r[0], "rating": r[1], "comment": r[2], "date": str(r[3])} for r in rows]
 
 
 @tool
 def get_product_details(resolved_product_names: list[str]) -> list[dict]:
-    """Catalog details for named product(s): price, sale price, discount,
-    stock, brand, description, ingredients, active status. Covers
-    price/stock/discount/ingredient/'do you sell X' questions in one tool.
+    """Catalog details for named product(s): description, price, stock.
+    Covers price/stock/description/'do you sell X' questions in one tool.
 
     Resolve names via get_all_product_names first (pass its `category` arg
     when the question points at Fruits / vegetables / Packages). This is also
@@ -320,23 +255,16 @@ def get_product_details(resolved_product_names: list[str]) -> list[dict]:
     resolve the names in that category, then pass them all here.
 
     Empty list = not found - don't guess."""
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT "Name", "Brand", "Price", "SalePrice", "DiscountPercentage", '
-        '"StockQuantity", "Description", "Ingredients", "isActive" '
-        'FROM "Product" WHERE "Name" = ANY(%s)',
-        (resolved_product_names,)
+    if not resolved_product_names:
+        return []
+    rows = fetch_all(
+        f"SELECT Name, Description, Price, StockQuantity FROM Products "
+        f"WHERE Name IN ({placeholders(resolved_product_names)})",
+        tuple(resolved_product_names),
     )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
     return [
-        {
-            "name": r[0], "brand": r[1], "price": r[2], "sale_price": r[3],
-            "discount_percentage": r[4], "stock_quantity": r[5],
-            "description": r[6], "ingredients": r[7], "is_active": r[8],
-        }
+        {"name": r[0], "description": r[1], "price": r[2],
+         "stock_quantity": r[3], "in_stock": r[3] > 0}
         for r in rows
     ]
 
@@ -350,68 +278,51 @@ def get_product_details(resolved_product_names: list[str]) -> list[dict]:
 
 @tool
 def get_products_on_sale(page: int = 1) -> dict:
-    """Paginated list of active discounted products, highest discount
-    first. Use for 'what's on sale', 'any deals right now'."""
-    page_size = 50
-    offset = (page - 1) * page_size
-
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT "Name", "Price", "SalePrice", "DiscountPercentage" FROM "Product" '
-        'WHERE "DiscountPercentage" > 0 AND "isActive" = true '
-        'ORDER BY "DiscountPercentage" DESC LIMIT %s OFFSET %s',
-        (page_size + 1, offset)
+    """Paginated list of products currently flagged as deals/on sale, with
+    their price. Use for 'what's on sale', 'any deals right now'. The store
+    does not record a discount percentage or a previous price - only which
+    products are deals."""
+    offset = (page - 1) * PAGE_SIZE
+    # "On sale" is modelled as the 'sales_deals' tag on a product.
+    rows = fetch_all(
+        "SELECT p.Name, p.Price FROM Products p "
+        "JOIN ProductTags pt ON pt.ProductId = p.Id "
+        "JOIN Tags t ON t.Id = pt.TagId "
+        "WHERE t.Name = 'sales_deals' "
+        "ORDER BY p.Name OFFSET ? ROWS FETCH NEXT ? ROWS ONLY",
+        (offset, PAGE_SIZE + 1),
     )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    has_more = len(rows) > page_size
-    items = [
-        {"name": r[0], "price": r[1], "sale_price": r[2], "discount_percentage": r[3]}
-        for r in rows[:page_size]
-    ]
-    return {"items": items, "page": page, "has_more": has_more}
+    has_more = len(rows) > PAGE_SIZE
+    return {"items": [{"name": r[0], "price": r[1]} for r in rows[:PAGE_SIZE]],
+            "page": page, "has_more": has_more}
 
 
 @tool
 def get_best_selling_products(limit: int = 5) -> list[dict]:
-    """Top-selling active products store-wide by quantity sold. `limit`
-    controls how many (default 5; 1 for "THE best seller"). Store-wide
-    aggregate - never tied to any user."""
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT "Product"."Name", SUM("Order_Item"."Quantity") AS "TotalSold" '
-        'FROM "Order_Item" JOIN "Product" ON "Product"."Id" = "Order_Item"."ProductId" '
-        'WHERE "Product"."isActive" = true '
-        'GROUP BY "Product"."Name" ORDER BY "TotalSold" DESC LIMIT %s',
-        (limit,)
+    """Top-selling products store-wide by quantity sold. `limit` controls
+    how many (default 5; 1 for "THE best seller"). Store-wide aggregate -
+    never tied to any user."""
+    rows = fetch_all(
+        "SELECT TOP (?) p.Name, SUM(oi.Quantity) AS TotalSold "
+        "FROM OrderItem oi JOIN Products p ON p.Id = oi.ProductId "
+        "GROUP BY p.Name ORDER BY TotalSold DESC",
+        (limit,),
     )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
     return [{"name": r[0], "total_sold": r[1]} for r in rows]
 
 
 @tool
 def get_top_rated_products(limit: int = 5) -> list[dict]:
-    """Highest-rated active products store-wide by average rating. `limit`
+    """Highest-rated products store-wide by average rating. `limit`
     controls how many (default 5). Aggregate only - never exposes who
     wrote a review or anything about a specific person."""
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT "Product"."Name", AVG("Review"."Rating") AS "AvgRating", COUNT(*) AS "ReviewCount" '
-        'FROM "Review" JOIN "Product" ON "Product"."Id" = "Review"."ProductId" '
-        'WHERE "Product"."isActive" = true '
-        'GROUP BY "Product"."Name" ORDER BY "AvgRating" DESC, "ReviewCount" DESC LIMIT %s',
-        (limit,)
+    # CAST: Rating is an int and T-SQL's AVG of ints truncates to an int.
+    rows = fetch_all(
+        "SELECT TOP (?) p.Name, AVG(CAST(r.Rating AS FLOAT)) AS AvgRating, COUNT(*) AS ReviewCount "
+        "FROM ProductReviews r JOIN Products p ON p.Id = r.ProductId "
+        "GROUP BY p.Name ORDER BY AvgRating DESC, ReviewCount DESC",
+        (limit,),
     )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
     return [{"name": r[0], "average_rating": float(r[1]), "review_count": r[2]} for r in rows]
 
 
@@ -422,53 +333,32 @@ def get_product_reviews(resolved_product_names: list[str], page: int = 1) -> dic
     'average rating for X' (compute it yourself from the ratings). Resolve
     names via get_all_product_names first. Never includes who wrote a
     review. For the user's OWN reviews, use get_my_reviews instead."""
-    page_size = 50
-    offset = (page - 1) * page_size
-
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT "Product"."Name", "Review"."Rating", "Review"."Comment", "Review"."CreationDate" '
-        'FROM "Review" JOIN "Product" ON "Product"."Id" = "Review"."ProductId" '
-        'WHERE "Product"."Name" = ANY(%s) '
-        'ORDER BY "Review"."CreationDate" DESC LIMIT %s OFFSET %s',
-        (resolved_product_names, page_size + 1, offset)
+    if not resolved_product_names:
+        return {"items": [], "page": page, "has_more": False}
+    offset = (page - 1) * PAGE_SIZE
+    rows = fetch_all(
+        f"SELECT p.Name, r.Rating, r.Comment, r.CreatedAt FROM ProductReviews r "
+        f"JOIN Products p ON p.Id = r.ProductId "
+        f"WHERE p.Name IN ({placeholders(resolved_product_names)}) "
+        f"ORDER BY r.CreatedAt DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY",
+        tuple(resolved_product_names) + (offset, PAGE_SIZE + 1),
     )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    has_more = len(rows) > page_size
-    items = [
-        {"product": r[0], "rating": r[1], "comment": r[2], "date": str(r[3])}
-        for r in rows[:page_size]
-    ]
+    has_more = len(rows) > PAGE_SIZE
+    items = [{"product": r[0], "rating": r[1], "comment": r[2], "date": str(r[3])}
+             for r in rows[:PAGE_SIZE]]
     return {"items": items, "page": page, "has_more": has_more}
 
 
-@tool
-def check_voucher_validity(code: str) -> dict:
-    """Whether a voucher code exists/is valid - expiry, expired flag,
-    amount. Standalone lookup, never joined to orders/users - cannot
-    reveal who used a code. Not-found if the code doesn't exist."""
-    conn = _get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        'SELECT "Code", "ExpiryDate", "IsExpired", "Amount" FROM "Voucher" WHERE "Code" ILIKE %s',
-        (code,)
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    if row is None:
-        return {"found": False}
-    return {"found": True, "code": row[0], "expiry_date": str(row[1]), "is_expired": row[2], "amount": row[3]}
+# NOTE: check_voucher_validity was removed - the backend dropped the Voucher
+# table (vouchers are not being implemented), so there is nothing to query.
+# The store's voucher POLICY text still lives in the FAQ/vector store and is
+# answered by search_policies_and_faqs, not from the database.
 
 
 @tool
 async def sql_agent_tool(question: str, config: RunnableConfig) -> str:
-    """Delegate a question about products, orders, cart, stock, prices,
-    reviews, or vouchers to the specialized SQL data agent. Use this for
+    """Delegate a question about products, orders, cart, stock, prices, or
+    reviews to the specialized SQL data agent. Use this for
     ANY question requiring structured store/order data - it handles product
     name resolution and pagination internally and returns one final answer.
     Do NOT use this for policy/FAQ/general knowledge questions."""
@@ -484,12 +374,12 @@ async def sql_agent_tool(question: str, config: RunnableConfig) -> str:
     # .text (not .content) - this tool is typed to return str, but a Gemini
     # sub-agent llm returns content as a list of blocks, not a plain string.
     return result["messages"][-1].text
+
+
 @tool
 def search_policies_and_faqs(question: str) -> str:
-    """Search FAQs, policies, and product descriptions - covers returns,
-    shipping, delivery, payment methods, and general product details. Do NOT
-    use this for order-specific or account-specific data (use the order/cart
-    tools for that)."""
+    """Search store policies and FAQs - covers returns, shipping, delivery
+    windows, and payment methods. It has NO product data at all: anything
+    about a specific product, including its description, belongs to the SQL
+    agent. Do NOT use this for order-specific or account-specific data."""
     return adaptive_corrective_answer(question)
-
-

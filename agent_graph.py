@@ -1,3 +1,4 @@
+import re
 from typing import Annotated, Sequence, TypedDict
 from langchain_core.messages.utils import count_tokens_approximately
 from dotenv import load_dotenv
@@ -55,7 +56,9 @@ TOOLS
 You have exactly two tools:
 
 - sql_agent_tool -> use for ANY question needing structured store or
-  account data: products, prices, stock, orders, cart, reviews, vouchers.
+  account data: products, prices, stock, orders, cart, reviews. It has NO
+  voucher data - voucher/promo codes are not in the database, so voucher
+  questions are policy questions for search_policies_and_faqs.
   This is a specialized sub-agent that handles product-name resolution,
   SQL generation, and pagination internally. Give it the customer's
   question in plain language and use its returned answer directly - do
@@ -140,7 +143,7 @@ have already been retrieved and appear below.
 - If they answer the question, answer DIRECTLY from them - do NOT call
   search_policies_and_faqs, it would only re-read the same documents.
 - Still call sql_agent_tool for anything needing live store or account data
-  (products, prices, stock, orders, cart, reviews, vouchers) - these excerpts
+  (products, prices, stock, orders, cart, reviews) - these excerpts
   never contain that.
 - If the excerpts do not actually cover what was asked, say so plainly, or
   call search_policies_and_faqs for a deeper search. Never stretch a nearby
@@ -148,6 +151,28 @@ have already been retrieved and appear below.
 
 {context}
 """
+
+# Questions that are unambiguously about the customer's OWN account. The policy
+# corpus cannot answer these, so the prefetch above is pure waste - it adds
+# ~800 tokens of irrelevant refund/delivery text to the prompt.
+#
+# Deliberately narrow: only "my <thing>" / order-status phrasings. Price and
+# stock words are NOT here on purpose - "how much is delivery" is a POLICY
+# question (delivery fees are in the FAQ) while "how much is milk" is SQL, and
+# no keyword tells those apart. When in doubt we keep the prefetch, since the
+# worst case is just the older, slower path.
+_PERSONAL_ACCOUNT_QUESTION = re.compile(
+    r"\bmy\s+(order|orders|cart|basket|address|addresses|review|reviews|purchase|purchases|account)\b"
+    r"|\border\s+(status|number|history)\b"
+    r"|\b(what|when)\s+did\s+i\s+(order|buy|purchase)\b"
+    r"|\bwhat('s|\s+is)\s+in\s+my\b"
+    r"|\b(track|status\s+of)\s+my\b",
+    re.I,
+)
+
+
+def _is_personal_account_question(question: str) -> bool:
+    return _PERSONAL_ACCOUNT_QUESTION.search(question) is not None
 
 
 def summarize_old_messages(state: AgentState):
@@ -199,7 +224,7 @@ async def Agent(state: AgentState, config) -> AgentState:
              if isinstance(m, HumanMessage) or getattr(m, "type", None) == "human"),
             None,
         )
-        if question:
+        if question and not _is_personal_account_question(str(question)):
             docs = retriever.invoke(str(question))
             if docs:
                 context = "\n\n".join(d.page_content for d in docs)

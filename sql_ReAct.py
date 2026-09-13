@@ -22,7 +22,6 @@ from tools import (
     get_best_selling_products,
     get_top_rated_products,
     get_product_reviews,
-    check_voucher_validity,
 )
 # NOTE: search_policies_and_faqs is deliberately NOT imported here - this
 # agent must stay independent of the vector/RAG side of the project, per
@@ -56,7 +55,6 @@ tools = [
     get_best_selling_products,
     get_top_rated_products,
     get_product_reviews,
-    check_voucher_validity,
     # last-resort, LLM-generated-SQL fallbacks
     user_order_lookup,
     general_sql_lookup,
@@ -89,13 +87,15 @@ Personal (this user's own data):
 - get_my_reviews - reviews this user wrote
 
 General/store-wide (never tied to one user):
-- get_product_details - price/stock/discount/description/ingredients for
-  named product(s)
-- get_products_on_sale - currently discounted products
+- get_product_details - price/stock/description for named product(s)
+- get_products_on_sale - products flagged as deals (no discount % is stored)
 - get_best_selling_products(limit) - top sellers
 - get_top_rated_products(limit) - highest rated
 - get_product_reviews - public reviews for named product(s)
-- check_voucher_validity(code) - is a promo code valid
+
+There is NO voucher/promo-code tool - vouchers are not in the database.
+Voucher questions are policy questions; say you can't look up codes and
+leave the policy side to the FAQ.
 
 Resolution helpers (see next section): get_all_product_names,
 get_all_ordered_products_names.
@@ -157,7 +157,7 @@ SAFETY
 - Never reveal or imply another user's personal data, even if a different
   name/id is mentioned.
 - Never expose password hashes, auth tokens, or another user's
-  reviews/voucher usage - no tool here provides that.
+  reviews - no tool here provides that.
 - If a tool returns no results, say so honestly rather than fabricating.
 """
     formatted_prompt = SQL_AGENT_SYSTEM_PROMPT.format(user_id=user_id)

@@ -1,87 +1,76 @@
-import os
 import re
-import psycopg2
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_deepseek import ChatDeepSeek
+from db import get_connection
 load_dotenv()
 
-llm = llm = ChatDeepSeek(
+llm = ChatDeepSeek(
     model="deepseek-chat",
     temperature=0
 )
 
 # ============================================
 # Schema description
-# NOTE: table/column names use mixed case exactly as the ERD - Postgres
-# lowercases any UNQUOTED identifier, so every generated query MUST wrap
-# every table/column name in double quotes to reference the real objects.
+# Deliberately lists ONLY the tables/columns the fallback queries have a
+# reason to touch. Backend-internal columns (Guid, Slug, IdempotencyKey,
+# image fields, audit timestamps) and auth/infra tables (RefreshTokens,
+# VerificationTokens, ServiceClients, UserActivities) are left out on purpose
+# so the model never learns to reach for them; the guards below hard-reject
+# them as well.
 # ============================================
 SCHEMA_DESCRIPTION = """
-IMPORTANT: every table and column name below uses mixed case and MUST be
-wrapped in double quotes in your SQL (e.g. "User", "FirstName") - Postgres
-silently lowercases unquoted identifiers, which would fail to match these
-real, mixed-case table/column names.
+Dialect: Microsoft SQL Server (T-SQL).
+- For a limited number of rows use TOP (n), or ORDER BY ... OFFSET n ROWS
+  FETCH NEXT m ROWS ONLY. NEVER use LIMIT.
+- The orders table is a reserved word: ALWAYS write it as [Order].
+- No other identifier needs quoting. Use the names exactly as listed.
 
 Tables:
 
-"User"("Id", "FirstName", "LastName", "Email", "PhoneNumber", "HashedPassword",
-       "RefreshToken", "Role", "CreatedAt", "UpdatedAt")
-    - one row per registered user
-    - NEVER select or return "HashedPassword" or "RefreshToken" - sensitive
-      authentication data, must never appear in query results
+Users(Id, FirstName, LastName, Email, PhoneNumber)
+    - one row per registered customer
 
-"UserAddress"("Id", "UserId", "Address")
-    - a user's saved address(es) - "UserId" references "User"."Id"
+UserAddresses(Id, UserId, Location)
+    - a customer's saved delivery address(es); Location is free text
 
-"Category"("Id", "ParentId", "Name", "CreatedAt")
-    - product categories; "ParentId" self-references "Category"."Id" for subcategories
+Categories(Id, Name)
+    - exactly three real categories: 'Fruits', 'vegetables', 'Packages'
+      ('Packages' = everything packaged: dairy, bakery, drinks, pantry, snacks)
 
-"Product"("Id", "CategoryId", "Slug", "Name", "Description", "Brand", "Price",
-          "SalePrice", "DiscountPercentage", "StockQuantity", "Ingredients",
-          "isActive", "ProductImage", "AltText")
-    - one row per product (grocery items)
-    - Customers often refer to products by casual/generic words. The caller
-      resolves this ahead of time and passes the exact "Name" separately -
-      use that exact name when filtering, not any generic word from the question.
+Products(Id, CategoryId, Name, Description, Price, StockQuantity)
+    - one row per product. Customers often use casual words; the caller
+      resolves those to the exact Name ahead of time and passes it separately -
+      filter on that exact Name, never on a generic word from the question.
 
-"Tag"("Id", "Name")
-    - labels like "organic", "gluten-free"
+Tags(Id, Name) and ProductTags(ProductId, TagId)
+    - product labels (e.g. 'Milk', 'Apple'). The tag 'sales_deals' marks a
+      product as currently on sale; no discount percentage is stored anywhere.
 
-"ProductTags"("Id", "ProductId", "TagId")
-    - many-to-many join between "Product" and "Tag"
+ProductReviews(Id, UserId, ProductId, Rating, Comment, CreatedAt)
+    - Rating is an int. PUBLIC when browsed by product (e.g. "what do people
+      think of X") - but NEVER filter or group by UserId in a general,
+      non-personal query; that exposes one specific person's review history.
 
-"Review"("ID", "UserId", "ProductId", "Rating", "Comment", "CreationDate")
-    - product reviews. PUBLIC content when browsed by product (e.g. "what do
-      people think of X") - but NEVER filter or group by "UserId" in a
-      general/non-personal context, since that reveals one specific person's
-      review history rather than public product feedback
+Cart(Id, UserId) and CartItem(Id, CartId, ProductId, Quantity, UnitPrice)
+    - a customer's current basket
 
-"Cart"("Id", "CartItemId", "UserId")
-    - a user's active shopping cart
+[Order](Id, UserId, OrderNumber, Address, TotalAmount, Status, CreationDate, DeliveryTime)
+    - one row per order. Status is one of: 'Pending', 'Placed', 'Shipped',
+      'Delivered', 'Cancelled'
 
-"Cart_Item"("Id", "CartId", "ProductId", "Quantity")
-    - items currently in a cart
+OrderItem(Id, OrderId, ProductId, ProductName, Quantity, UnitPrice)
+    - line items; ProductName is the product's name at time of purchase
 
-"Voucher"("VoucherId", "Code", "ExpiryDate", "IsExpired", "Amount")
-    - GLOBAL promo codes, not personally assigned to any user. Standalone
-      lookups (e.g. "is code X still valid") are general/public. Only
-      JOINING "Voucher" to "Orders"/"User" to find what a specific person
-      has used is personal and must never appear in a general query.
-
-"Orders"("Id", "UserId", "VoucherId", "AddressId", "IdempotenceKey",
-         "TotalAmount", "Status", "PaymentMethod", "CreationDate", "DeliveryDate")
-    - one row per order (note: table is "Orders", not "Order" - reserved keyword)
-
-"Order_Item"("Id", "ProductId", "OrderId", "Quantity", "UnitPrice")
-    - items within an order
+There is no voucher / promo-code table - vouchers are not implemented. Never
+reference one.
 """
 
 # ============================================
 # CUSTOMER-SPECIFIC text-to-SQL (scoped to one authenticated user)
 # ============================================
-sql_template = """You are a PostgreSQL expert. Given the database schema below,
+sql_template = """You are a Microsoft SQL Server (T-SQL) expert. Given the database schema below,
 write a single, safe, READ-ONLY SQL query (SELECT only - never INSERT, UPDATE, DELETE, or DROP)
 that answers the user's question.
 
@@ -91,11 +80,11 @@ Schema:
 IMPORTANT: The currently authenticated user's id is {user_id}.
 If the question involves orders, cart, address, reviews the user wrote, or
 anything tied to "my" account, you MUST restrict the query to this user only,
-using "UserId" = {user_id} (directly, or via a join). Never return another
+using UserId = {user_id} (directly, or via a join). Never return another
 user's data, even if the question explicitly names a different person.
 
 Example: if the question asks "What did Sarah order?" but the authenticated
-user_id is 1 (not Sarah's id), you must still scope the query to "UserId" = 1
+user_id is 1 (not Sarah's id), you must still scope the query to UserId = 1
 only, ignoring the name mentioned in the question.
 
 If the question is about general product/catalog info unrelated to any
@@ -106,12 +95,12 @@ identified by the caller - will say "None" if not applicable):
 {resolved_product_names}
 
 If resolved name(s) are given above (not "None"), you MUST use them in your
-filter on "Product"."Name" - do NOT use a generic word from the question directly.
+filter on Products.Name - do NOT use a generic word from the question directly.
 
 Question: {question}
 
-Respond with ONLY the raw SQL query, with every table/column name in double
-quotes exactly as shown in the schema. No explanation, no markdown formatting."""
+Respond with ONLY the raw SQL query - write the orders table as [Order], every
+other identifier unquoted exactly as in the schema. No explanation, no markdown."""
 
 sql_prompt = ChatPromptTemplate.from_template(sql_template)
 sql_generation_chain = sql_prompt | llm | StrOutputParser()
@@ -123,6 +112,10 @@ def _format_resolved_products(resolved_product_names: list[str] | None) -> str:
     return ", ".join(resolved_product_names)
 
 
+def _clean_sql(raw_output: str) -> str:
+    return raw_output.strip().strip("`").replace("sql\n", "", 1).strip()
+
+
 def generate_sql(question: str, resolved_product_names: list[str] | None = None, user_id: int | None = None) -> str:
     """Generates a user-scoped SQL query string from a natural language question."""
     raw_output = sql_generation_chain.invoke({
@@ -131,20 +124,39 @@ def generate_sql(question: str, resolved_product_names: list[str] | None = None,
         "user_id": user_id if user_id is not None else "UNKNOWN (not logged in)",
         "resolved_product_names": _format_resolved_products(resolved_product_names)
     })
-    cleaned = raw_output.strip().strip("`").replace("sql\n", "", 1).strip()
-    return cleaned
+    return _clean_sql(raw_output)
+
+
+# ============================================
+# Guards
+# T-SQL identifiers aren't case-sensitive and may appear bare, bracketed,
+# quoted, or dbo.-prefixed, so table/column detection is a whole-word,
+# case-insensitive match on a copy with that punctuation stripped. Whole-word
+# matters: [Order] must not match OrderItem, Users must not match UserAddresses.
+# ============================================
+def _strip_identifier_noise(query: str) -> str:
+    stripped = re.sub(r'[\[\]"]', "", query)
+    return re.sub(r"\bdbo\.", "", stripped, flags=re.I)
+
+
+def _mentions(query: str, identifier: str) -> bool:
+    return re.search(rf"\b{re.escape(identifier)}\b", _strip_identifier_noise(query), re.I) is not None
 
 
 # Tables that ALWAYS require scoping to the authenticated user's UserId.
-PERSONAL_TABLES = ['"User"', '"UserAddress"', '"Orders"', '"Order_Item"', '"Cart"', '"Cart_Item"']
+PERSONAL_TABLES = ["Users", "UserAddresses", "Order", "OrderItem", "Cart", "CartItem"]
+
+# Never legitimate in any generated query: auth/infra tables and the one
+# sensitive column on Users. Not listed in the schema, hard-rejected here.
+SENSITIVE_IDENTIFIERS = [
+    "HashedPassword", "RefreshTokens", "VerificationTokens", "ServiceClients",
+    "UserActivities", "__EFMigrationsHistory",
+]
 
 
 def is_properly_scoped(query: str, user_id: int | None) -> bool:
-    """Defense-in-depth check for the customer-specific path. Uses the
-    ORIGINAL-CASE query to detect which quoted tables are referenced (since
-    identifiers are case-sensitive), and a separate lowercased copy only for
-    detecting SQL keywords like OR (keywords aren't case-sensitive)."""
-    touches_personal_data = any(table in query for table in PERSONAL_TABLES)
+    """Defense-in-depth check for the customer-specific path."""
+    touches_personal_data = any(_mentions(query, table) for table in PERSONAL_TABLES)
 
     if not touches_personal_data:
         return True  # general product/catalog queries don't need scoping
@@ -159,43 +171,48 @@ def is_properly_scoped(query: str, user_id: int | None) -> bool:
     if " or " in normalized_for_keywords:
         return False
 
-    # Extra guard for the "User" table itself: even with the real id present,
+    # Extra guard for the Users table itself: even with the real id present,
     # block anything that could return more than one user's row.
-    if '"User"' in query and "limit 1" not in normalized_for_keywords \
-            and f'"Id" = {user_id}' not in query and f'"Id"={user_id}' not in query:
-        return False
+    if _mentions(query, "Users"):
+        pinned_to_self = re.search(rf"\bId\s*=\s*{user_id}\b", _strip_identifier_noise(query), re.I)
+        single_row = re.search(r"\btop\s*\(?\s*1\s*\)?", normalized_for_keywords)
+        if not pinned_to_self and not single_row:
+            return False
 
     return True
 
 
 def is_safe_query(query: str) -> bool:
-    """Basic safety check - only allow SELECT statements. Keywords are not
-    case-sensitive, so lowercasing here is safe and doesn't affect identifier matching."""
+    """Only allow a single SELECT statement, with no write/exec keywords and
+    no sensitive identifiers.
+
+    Keyword checks are whole-word: a plain substring test would reject any
+    query touching CreatedAt (contains 'create') or an UpdatedAt column."""
     normalized = query.strip().lower()
-    forbidden = ["insert", "update", "delete", "drop", "alter", "truncate", "create"]
     if not normalized.startswith("select"):
         return False
-    if any(word in normalized for word in forbidden):
+    # one statement only - a trailing ';' is fine, anything after one is not
+    if ";" in normalized.rstrip().rstrip(";"):
+        return False
+    forbidden = (r"\b(insert|update|delete|drop|alter|truncate|create|merge|grant|revoke|"
+                 r"exec|execute|openrowset|opendatasource|xp_\w+|sp_\w+)\b")
+    if re.search(forbidden, normalized):
+        return False
+    if any(_mentions(query, ident) for ident in SENSITIVE_IDENTIFIERS):
         return False
     return True
 
 
 def _run_query(query: str):
-    db_url = (
-        f"dbname={os.getenv('DATABASE_NAME')} "
-        f"user={os.getenv('DATABASE_USERNAME')} "
-        f"password={os.getenv('DATABASE_PASSWORD')} "
-        f"host={os.getenv('DATABASE_HOSTNAME')} "
-        f"port={os.getenv('DATABASE_PORT')}"
-    )
     try:
-        conn = psycopg2.connect(db_url)
-        cursor = conn.cursor()
-        cursor.execute(query)
-        columns = [desc[0] for desc in cursor.description]
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(query)
+            columns = [desc[0] for desc in cursor.description]
+            rows = [tuple(r) for r in cursor.fetchall()]
+        finally:
+            conn.close()
         return {"columns": columns, "rows": rows}, None
     except Exception as e:
         return None, f"Query execution failed: {e}"
@@ -265,34 +282,32 @@ def answer_sql_specific_question(question: str, resolved_product_names: list[str
 # ============================================
 # GENERAL / AGGREGATE text-to-SQL (no single user - store-wide / public data)
 # ============================================
-general_sql_template = """You are a PostgreSQL expert. Given the database schema below,
+general_sql_template = """You are a Microsoft SQL Server (T-SQL) expert. Given the database schema below,
 write a single, safe, READ-ONLY SQL query (SELECT only) that answers the question.
 
 Schema:
 {schema}
 
 IMPORTANT rules for this GENERAL, non-personal query:
-- NEVER reference "User", "UserAddress", "Cart", or "Cart_Item" in any way.
-- "Orders" and "Order_Item" CAN be used for legitimate store-wide aggregates
+- NEVER reference Users, UserAddresses, Cart, or CartItem in any way.
+- [Order] and OrderItem CAN be used for legitimate store-wide aggregates
   (e.g. "most ordered product", "total orders placed", "which category sells
-  the most") - but NEVER join them to "User", and NEVER reference "UserId"
+  the most") - but NEVER join them to Users, and NEVER reference UserId
   anywhere in the query.
-- "Review" is public when browsing by PRODUCT (e.g. average rating, listing
-  reviews for an item) - but NEVER filter, group, or select by "UserId" on
-  "Review" - that reveals one specific person's review activity.
-- "Voucher" is a global promo code - standalone lookups by "Code" are fine,
-  but NEVER join "Voucher" to "Orders" or reference any "UserId" - that
-  reveals which specific person used which voucher.
+- ProductReviews is public when browsing by PRODUCT (e.g. average rating,
+  listing reviews for an item) - but NEVER filter, group, or select by UserId
+  on ProductReviews - that reveals one specific person's review activity.
+- There is no voucher table - never reference one.
 - If you cannot answer without identifying one specific person, do not guess -
   write a query that returns nothing meaningful rather than exposing personal data.
 
 PAGINATION: if the question asks for a LIST or ENUMERATION of multiple items
-(e.g. "list all products", "show me every X"), you MUST include
-LIMIT {limit_value} OFFSET {offset_value} in your query, ordered by a sensible
-column (e.g. name or date). If the question asks for a SINGLE fact, total, or
-aggregate (e.g. "what is the most popular product", "how many total orders
-exist", "what is the average rating"), do NOT add LIMIT/OFFSET - aggregate
-queries naturally return one row regardless of page.
+(e.g. "list all products", "show me every X"), you MUST order by a sensible
+column (e.g. name or date) and end the query with
+OFFSET {offset_value} ROWS FETCH NEXT {limit_value} ROWS ONLY.
+If the question asks for a SINGLE fact, total, or aggregate (e.g. "what is the
+most popular product", "how many total orders exist", "what is the average
+rating"), do NOT paginate - use TOP (1) where one row is wanted.
 
 Resolved exact product name(s) for this question, if relevant (will say
 "None" if not applicable):
@@ -300,7 +315,8 @@ Resolved exact product name(s) for this question, if relevant (will say
 
 Question: {question}
 
-Respond with ONLY the raw SQL query, every table/column name in double quotes."""
+Respond with ONLY the raw SQL query - write the orders table as [Order], every
+other identifier unquoted exactly as in the schema. No explanation, no markdown."""
 
 general_sql_prompt = ChatPromptTemplate.from_template(general_sql_template)
 general_sql_generation_chain = general_sql_prompt | llm | StrOutputParser()
@@ -319,23 +335,22 @@ def generate_general_sql(question: str, resolved_product_names: list[str] | None
         "offset_value": offset_value,
         "limit_value": limit_value
     })
-    cleaned = raw_output.strip().strip("`").replace("sql\n", "", 1).strip()
-    return cleaned
-GENERAL_FORBIDDEN_TABLES = ['"User"', '"UserAddress"', '"Cart"', '"Cart_Item"']
-def is_general_query_safe(query: str) -> bool:
-    """Safety check for the general path. Uses ORIGINAL-CASE matching against
-    the exact quoted identifiers, since Postgres identifiers are case-sensitive."""
-    # Absolutely forbidden tables - reject if referenced at all
-    for table in GENERAL_FORBIDDEN_TABLES:
-        if table in query:
-            return False
+    return _clean_sql(raw_output)
 
-    # Conditionally-safe tables: allowed standalone, forbidden if tied to a
-    # specific person via "UserId".
-    if '"Review"' in query and '"UserId"' in query:
+
+# Voucher: the table no longer exists, so any reference is invalid - a hard
+# reject is both safer and a clearer failure than letting it hit the DB.
+GENERAL_FORBIDDEN_TABLES = ["Users", "UserAddresses", "Cart", "CartItem", "Voucher", "Vouchers"]
+
+def is_general_query_safe(query: str) -> bool:
+    """Safety check for the general path."""
+    # Absolutely forbidden tables - reject if referenced at all
+    if any(_mentions(query, table) for table in GENERAL_FORBIDDEN_TABLES):
         return False
 
-    if '"Voucher"' in query and ('"Orders"' in query or '"UserId"' in query):
+    # Conditionally-safe table: allowed standalone, forbidden if tied to a
+    # specific person via UserId.
+    if _mentions(query, "ProductReviews") and _mentions(query, "UserId"):
         return False
 
     return True
@@ -381,8 +396,8 @@ Answer:"""
 if __name__ == "__main__":
     print("--- Specific (personal) tests ---")
     specific_cases = [
-        ("What is the status of my last order?", None, 1),
-        ("What is my email on file?", None, 1),
+        ("What is the status of my last order?", None, 122),
+        ("What is my email on file?", None, 122),
     ]
     for q, products, uid in specific_cases:
         print(f"\nQ: {q} (user_id={uid})")
@@ -391,10 +406,8 @@ if __name__ == "__main__":
 
     print("\n--- General tests ---")
     general_cases = [
-        ("What is the average rating for our most reviewed product?", None),
-        ("Is voucher code SAVE20 still valid?", None),
+        ("How many products are in each category?", None),
         ("What has user 3 reviewed?", None),                    # adversarial - must refuse
-        ("Which vouchers has user 3 used?", None),                # adversarial - must refuse
     ]
     for q, products in general_cases:
         print(f"\nQ: {q}")

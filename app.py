@@ -32,6 +32,13 @@ async def lifespan(app: FastAPI):
     app.state.checkpointer = checkpointer
     app.state.compiled_graph = graph.compile(checkpointer=checkpointer)
 
+    # Warm the SQL sub-agent at startup. sql_agent_tool imports sql_ReAct
+    # lazily (a module-level import there would be circular: sql_ReAct imports
+    # tools), and building it - two chat models, bind_tools over 15 tools,
+    # compiling the graph - costs ~2.9s. Without this, the first customer to
+    # ask a data question pays that inside their request.
+    import sql_ReAct  # noqa: F401
+
     yield
 
     await checkpointer_cm.__aexit__(None, None, None)
