@@ -39,6 +39,12 @@ async def lifespan(app: FastAPI):
     # ask a data question pays that inside their request.
     import sql_ReAct  # noqa: F401
 
+    # Open a couple of SQL Server connections now. The first connection to the
+    # remote server costs ~0.9s (TCP + TLS + login) - better paid at boot than
+    # inside the first customer's request. See db.py for the pool.
+    from db import warm_pool
+    warm_pool(2)
+
     yield
 
     await checkpointer_cm.__aexit__(None, None, None)

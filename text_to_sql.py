@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_deepseek import ChatDeepSeek
-from db import get_connection
+from db import connection
 load_dotenv()
 
 llm = ChatDeepSeek(
@@ -205,14 +205,16 @@ def is_safe_query(query: str) -> bool:
 
 def _run_query(query: str):
     try:
-        conn = get_connection()
-        try:
+        # Pooled checkout (see db.py). The cursor is closed in `finally` so the
+        # result set is released before the connection goes back to the pool.
+        with connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(query)
-            columns = [desc[0] for desc in cursor.description]
-            rows = [tuple(r) for r in cursor.fetchall()]
-        finally:
-            conn.close()
+            try:
+                cursor.execute(query)
+                columns = [desc[0] for desc in cursor.description]
+                rows = [tuple(r) for r in cursor.fetchall()]
+            finally:
+                cursor.close()
         return {"columns": columns, "rows": rows}, None
     except Exception as e:
         return None, f"Query execution failed: {e}"
