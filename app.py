@@ -6,7 +6,8 @@ from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from session_insights import get_suggested_product_ids
 from schemas import QuestionRequest, AnswerResponse, TerminationRequest, TerminationResponse
-from agent_graph import graph, DB_URI, summarize_chat
+from agent_graph import graph, summarize_chat
+from checkpoint_db import describe_target, get_checkpoint_db_url
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 # psycopg's async mode requires a SelectorEventLoop, but Windows defaults the
@@ -27,8 +28,13 @@ fast_llm = ChatGoogleGenerativeAI(model="gemma-4-26b-a4b-it", temperature=0)
 # ============================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    checkpointer_cm = AsyncPostgresSaver.from_conn_string(DB_URI)
+    # The chat-persistence database (RDS in deployment). Separate from the
+    # backend SQL Server the store tools read - see checkpoint_db.py.
+    print(f"[startup] chat persistence -> {describe_target()}")
+    checkpointer_cm = AsyncPostgresSaver.from_conn_string(get_checkpoint_db_url())
     checkpointer = await checkpointer_cm.__aenter__()
+    # Creates the checkpoint_* tables on first run if they don't exist yet,
+    # so a fresh RDS instance needs no manual schema setup.
     await checkpointer.setup()
 
     app.state.checkpointer = checkpointer

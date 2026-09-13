@@ -4,3 +4,12 @@ __pycache__/
 *.pyc
 chroma_data/
 .vscode/
+# One-off dump of the retired local-Postgres business tables (superseded by
+# the backend SQL Server). Contains seed user rows - keep out of git.
+local_pg_business_tables_backup.json
+
+# Terraform state can contain the DB password in plaintext.
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/*.tfvars

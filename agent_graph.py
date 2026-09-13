@@ -19,10 +19,9 @@ from pydantic import Field
 
 load_dotenv()
 
-DB_URI = (
-    f"postgresql://{os.getenv('DATABASE_USERNAME')}:{os.getenv('DATABASE_PASSWORD')}"
-    f"@{os.getenv('DATABASE_HOSTNAME')}:{os.getenv('DATABASE_PORT')}/{os.getenv('DATABASE_NAME')}"
-)
+# NOTE: the chat-persistence database URL lives in checkpoint_db.py and is
+# used only by app.py, which owns the checkpointer. This module builds the
+# graph; it does not connect to any database itself.
 
 
 class AgentState(TypedDict):

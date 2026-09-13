@@ -29,10 +29,9 @@ from tools import (
 
 load_dotenv()
 
-DB_URI = (
-    f"postgresql://{os.getenv('DATABASE_USERNAME')}:{os.getenv('DATABASE_PASSWORD')}"
-    f"@{os.getenv('DATABASE_HOSTNAME')}:{os.getenv('DATABASE_PORT')}/{os.getenv('DATABASE_NAME')}"
-)
+# NOTE: no DB_URI here. This sub-agent reads the store's business data from
+# SQL Server via tools.py/db.py; it never touches the chat-persistence
+# database. That URL lives in checkpoint_db.py and is used only by app.py.
 
 
 class AgentState(TypedDict):
