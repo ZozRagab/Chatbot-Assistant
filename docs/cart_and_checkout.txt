@@ -1,0 +1,49 @@
+Your Cart and Placing an Order
+
+Adding items to your cart
+Add a product to your cart by choosing it and the quantity you want. Your
+cart shows every item with its name, image, unit price, the quantity you
+chose, and a running total for the whole cart.
+
+Changing quantities or removing items
+You can update the quantity of anything already in your cart at any time
+before you place your order. Reducing a quantity or setting it to none
+takes that item out of your cart.
+
+Price changes while items sit in your cart
+Prices can change while a product is still in your cart. When that happens
+the item is flagged in your cart so you can see the price is no longer the
+one you first added. Always check your cart total before placing the order:
+the price you pay is the current price shown at checkout, not the price
+from when you first added the item.
+
+Placing an order
+When you are ready, place the order from your cart and enter the delivery
+address you want it sent to. You type the delivery address in at the time
+you place the order. Once the order is placed it is given an order number
+you can use to refer to it.
+
+Delivery address
+The address is entered per order, so you can send different orders to
+different places. There is no separate saved address book - enter the
+address you want each time you place an order.
+
+Payment at checkout
+There is no online payment step when you place an order. Every order is
+paid cash on delivery. See the payment FAQ for details.
+
+Is there a minimum order value?
+No minimum order value is set. You can place an order for any amount, and
+nothing blocks a small order from going through.
+
+Checking your orders
+Your order history lists every order you have placed, with its order
+number, total, delivery address, the date you placed it, its current
+status, and the items it contains. You can open any order to see its full
+details.
+
+Changing or cancelling an order
+Orders cannot be changed or cancelled once they are placed. There is no way
+to stop, amend or cancel an order yourself, and the assistant cannot do it
+for you either - that option is not available at the moment. Please check
+your cart carefully before you place an order.

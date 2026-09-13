@@ -1,0 +1,51 @@
+General Account FAQ
+
+Creating an account
+Register with your first name, last name, email, phone number and a
+password. Email addresses must be unique - the app checks whether an email
+is already registered before you submit.
+
+Activating your account
+After registering you receive an activation email. Your account must be
+activated before you can sign in. If the email does not arrive, request a
+new one from the activation screen and it will be sent again.
+
+Signing in and staying signed in
+Sign in with your email and password. Your session refreshes automatically
+while you keep using the app, so you are not asked to sign in repeatedly.
+Signing out ends the session on that device.
+
+Forgotten password
+Choose "Forgot Password" on the sign-in screen and we email you a reset
+code. Enter that code in the app to verify it, then choose a new password.
+Note this is a code you type in, not a link you click.
+
+Changing your password while signed in
+You can change your password at any time from your account settings by
+entering your current password and a new one. This does not require the
+email reset code.
+
+Updating your profile
+You can update your first name, last name, email, phone number and date of
+birth from your account settings at any time.
+
+Preferred categories
+Your profile stores a set of preferred categories. Setting these tells us
+which parts of the store you are most interested in so the app can put
+those products in front of you first. You can change them whenever you like
+from your account settings.
+
+Your activity history
+Your account keeps a record of your activity in the app so your
+information, orders and saved items stay consistent across devices.
+
+Getting help
+This assistant is the way to get help. It can answer questions about
+products, prices, stock and store policies, and it can look up your own
+orders, your cart and your order status.
+
+What the assistant cannot do
+It cannot change, cancel or refund an order, and it cannot change a
+delivery address once an order is placed. Those actions are not available
+at the moment. If you have a problem with an order that needs one of them,
+the assistant will not be able to resolve it for you yet.

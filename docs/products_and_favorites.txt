@@ -1,0 +1,58 @@
+Browsing Products, Reviews and Favorites
+
+Product categories
+The store is organised into three categories: Fruits, vegetables, and
+Packages. Fruits and vegetables are fresh produce. Packages covers
+everything that comes packaged - dairy, bakery, beverages, pantry goods,
+snacks and frozen items. You can browse any category to see the products
+inside it.
+
+Product tags
+Products carry tags that describe what they are, such as Milk, Soy-Milk,
+Oat-Milk, Sour-Milk, Sour-Cream, Apple and Pear. Tags make it easier to
+find related products across categories. Products currently being promoted
+carry the sales_deals tag.
+
+What each product listing shows
+Every product shows its name, description, price, an image, and how many
+units are currently in stock. Listings also show the product's average
+customer rating and how many reviews it has received.
+
+Stock and availability
+Stock counts are live. If a product's stock has run out you will not be
+able to add that quantity to your cart. Stock is shown on the product page
+so you can see how many units are available before you order.
+
+Product reviews and ratings
+Signed-in customers can leave a review on a product with a star rating and
+a written comment. Reviews are public and appear on the product page to
+help other shoppers decide.
+
+Who can leave a review
+Any signed-in customer can leave a review on a product. You do not have to
+have bought the product first.
+
+Your name on your review
+Your name is shown next to any review you leave, so other shoppers can see
+who wrote it. Reviews cannot be posted anonymously - if you would rather
+not have your name displayed on a product page, do not leave a review.
+
+Managing your own reviews
+You can edit or delete a review you have written at any time from the
+product page. You can only change your own reviews - never anyone else's.
+
+Average rating
+A product's average rating is calculated from all the customer reviews it
+has received, shown alongside the total number of reviews. A product with
+no reviews yet has no rating.
+
+Saving favorite products
+You can save any product to your favorites to find it again quickly. Open
+the product and add it to your favorites, and it appears in your favorites
+list. Removing it from favorites takes it off that list. Product pages show
+whether an item is already in your favorites.
+
+Saving favorite categories
+You can also favorite a whole category, not just individual products. This
+keeps the parts of the store you shop most often within easy reach. Your
+favorite categories can be added and removed at any time.

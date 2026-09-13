@@ -1,36 +1,55 @@
-Shipping and Delivery
+Delivery and Order Status
 
-Delivery areas
-We currently deliver across Cairo, Alexandria, and surrounding governorates.
-Enter your address at checkout to confirm delivery availability for your area.
+How delivery works
+When you place an order you enter the delivery address you want it sent to.
+Your order then moves through a series of statuses that you can follow in
+your order history until it reaches you. You pay the driver in cash when
+the order arrives.
 
-Delivery timing
-- Standard delivery: same-day if ordered before 2:00 PM, next-day otherwise.
-- Express delivery: within 2 hours of order confirmation, available in
-  central Cairo and Alexandria only, for an additional fee.
-- Scheduled delivery: choose a specific 2-hour delivery window up to 5 days
-  in advance at checkout.
+How long does delivery take?
+There is no published delivery timeframe. We do not promise same-day,
+next-day or any specific number of days, and no estimated delivery time is
+given when you place an order. What we can tell you is the delivery time
+recorded against your own order once one has been set for it - open the
+order in your order history to see it.
 
-Delivery fees
-- Orders over 300 EGP: free standard delivery.
-- Orders under 300 EGP: a flat 25 EGP delivery fee applies.
-- Express delivery: additional 40 EGP regardless of order size.
-
-Tracking your order
-Once your order status changes to "shipped," you'll receive a tracking
-link by SMS and email. You can also check real-time status anytime under
-Order History in the app.
+Which areas do you deliver to?
+There is no published list of delivery areas or cities. Enter the address
+you want your order sent to when you place it. The assistant cannot check
+or confirm in advance whether a particular area is covered.
 
 Order statuses explained
-- Processing: your order is being prepared at the warehouse.
-- Shipped: your order has left the warehouse and is on its way.
-- Delivered: your order has been handed to you or left at your address.
+- Pending: your order has been placed and is waiting to be prepared.
+- Placed: your order has been accepted and is being prepared.
+- Shipped: your order has left us and is on its way to your address.
+- Delivered: your order has reached you.
+- Cancelled: the order was cancelled and will not be delivered.
 
-Missed deliveries
-If you're not available at the scheduled time, our driver will attempt
-contact and wait up to 10 minutes. If delivery can't be completed, the
-order is rescheduled for the next available window at no extra charge.
+Following your order
+Your order history shows the current status of every order you have placed,
+along with its order number, total, delivery address and items. Check there
+at any time to see where an order has got to.
 
-Payment on delivery
-Cash on delivery is available for all standard and scheduled deliveries.
-Express deliveries require online payment at checkout.
+Delivery fees
+No separate delivery fee is added to your order. The total shown on your
+order is what you pay the driver.
+
+Express or scheduled delivery
+There is no express delivery option and no way to book a specific delivery
+window or time slot. Orders are delivered in the normal way after you place
+them.
+
+Delivery drivers and contact before delivery
+There is no published policy on what happens if you are not at home, how
+long a driver waits, or whether you are contacted before delivery. No
+information about this is available.
+
+Delivery address changes
+The delivery address is fixed to the one you entered when you placed the
+order. It cannot be changed afterwards, and the assistant cannot change it
+for you - so please check the address carefully before placing an order.
+
+If your order has not arrived
+The assistant can look up your order and tell you its current status and
+the delivery time recorded against it. Beyond that there is no way to chase
+or reschedule a delivery at the moment.

@@ -176,6 +176,25 @@ def _is_personal_account_question(question: str) -> bool:
     return _PERSONAL_ACCOUNT_QUESTION.search(question) is not None
 
 
+def _tool_already_ran_this_turn(messages) -> bool:
+    """Has a tool already run since the customer's latest message?
+
+    Walk backwards: a ToolMessage before we reach the newest HumanMessage means
+    we are mid-turn, already looping back from a tool.
+
+    NOT the same as "any ToolMessage in state". With the checkpointer,
+    state["messages"] is the WHOLE thread history, so a single SQL question
+    early on would leave a ToolMessage there forever and permanently disable
+    the prefetch for the rest of that customer's session.
+    """
+    for m in reversed(messages):
+        if isinstance(m, ToolMessage):
+            return True
+        if isinstance(m, HumanMessage) or getattr(m, "type", None) == "human":
+            return False
+    return False
+
+
 def summarize_old_messages(state: AgentState):
     messages = state["messages"]
     keep_recent = 6
@@ -215,11 +234,10 @@ async def Agent(state: AgentState, config) -> AgentState:
     user_id = config["configurable"]["user_id"]
     formatted_prompt = AGENT_SYSTEM_PROMPT.format(user_id=user_id)
 
-    # Pre-fetch policy context on the FIRST turn only. On later turns a tool has
-    # already answered, so the excerpts are dead weight (and re-retrieving would
-    # just burn tokens on every loop iteration).
-    is_first_turn = not any(isinstance(m, ToolMessage) for m in state["messages"])
-    if is_first_turn:
+    # Pre-fetch policy context at the START of each turn. Once a tool has run
+    # this turn it has already answered, so the excerpts are dead weight and
+    # re-retrieving would just burn tokens on every loop iteration.
+    if not _tool_already_ran_this_turn(state["messages"]):
         question = next(
             (m.content for m in reversed(state["messages"])
              if isinstance(m, HumanMessage) or getattr(m, "type", None) == "human"),

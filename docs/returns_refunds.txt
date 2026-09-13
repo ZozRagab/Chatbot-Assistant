@@ -1,39 +1,38 @@
-Return and Refund Policy
+Returns and Refunds
 
-We want you to be fully satisfied with every order. If something isn't right,
-here's how returns and refunds work.
+Are returns available?
+No. Returns are not available. There is no way to request a return for an
+order or for an individual item.
 
-Eligibility
-- Perishable items (produce, dairy, bakery, meat) can be returned within 24
-  hours of delivery if they arrive damaged, spoiled, or incorrect.
-- Non-perishable items (beverages, pantry goods, packaged snacks) can be
-  returned within 7 days of delivery if unopened and in original packaging.
-- Items marked "Final Sale" or purchased with a discount voucher applied to
-  a clearance item are not eligible for return.
+Are refunds available?
+No. Refunds are not available. Because every order is paid cash on
+delivery, no money is taken before your order reaches you.
 
-How to request a return
-1. Go to your Order History and select the order containing the item.
-2. Choose "Request Return" and select the reason (damaged, wrong item,
-   spoiled, no longer needed).
-3. For damaged or spoiled items, attach a photo if possible - this speeds
-   up approval.
-4. Submit the request. Most requests are reviewed within 24 hours.
+Something is wrong with my order
+If an item arrives damaged or spoiled, an item is missing, or you received
+something you did not order, we are sorry - that is not the experience we
+want you to have. The assistant can look up the order for you and confirm
+exactly what was on it, the amount and the delivery details, so you have a
+clear record of what happened.
 
-Refund timing
-- Approved refunds are issued to your original payment method.
-- Card payments: refunds typically appear within 3-5 business days.
-- Cash on delivery orders: refunds are issued as store credit, available
-  immediately in your account.
-- Voucher amounts used on a returned order are restored to your account
-  as a new voucher code, valid for 90 days.
+What can be done about it right now
+Nothing can be actioned on the order itself yet: a replacement, a refund
+and a return are all unavailable, so the assistant cannot arrange any of
+them for you. It will not promise a resolution it cannot deliver. Since
+orders are paid cash on delivery, the best moment to raise a problem is
+while the driver is still with you, before you pay.
 
-Damaged or missing items on delivery
-If an item arrives damaged, spoiled, or is missing from your order entirely,
-contact support within 24 hours of delivery for a full refund or free
-replacement - no return shipment needed for perishable goods.
+Refusing an order at the door
+Because you pay cash on delivery, nothing is charged until the order is
+handed to you. If something is clearly wrong when the driver arrives, you
+can raise it with the driver at that point.
 
-Order cancellations
-Orders can be cancelled free of charge before they enter the "processing"
-status. Once an order is "processing" or later, it can no longer be
-cancelled through the app - contact support directly and we'll do our best
-to accommodate.
+Cancelling an order
+Orders cannot be cancelled once placed. There is no cancellation option,
+and the assistant cannot cancel an order for you. Some orders show a
+Cancelled status - that status is applied by the store, not something you
+can set yourself. Please check your cart before placing an order.
+
+Store credit and vouchers
+Store credit is not offered, and there are no voucher, promo or refund
+codes. See the payment FAQ.

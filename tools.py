@@ -11,6 +11,18 @@ from text_to_sql import answer_sql_specific_question, answer_sql_general_questio
 
 PAGE_SIZE = 50
 
+# The store's three real categories. The Categories table also contains
+# leftover test rows ('davidfr3f', 'test category') holding junk products
+# ('string7', 'davidHANNA3', ...). They cannot simply be deleted: those
+# products are referenced by 157 orders and 129 users' carts, and
+# Products.CategoryId -> Categories is ON DELETE NO_ACTION, so the delete is
+# refused while they exist. Until the backend team cleans them up, the catalog
+# is filtered to these three so the assistant never offers a customer a test
+# product. Order history is unaffected - OrderItem stores its own ProductName,
+# so a past order still shows exactly what was bought.
+REAL_CATEGORIES = ("Fruits", "vegetables", "Packages")
+_REAL_CATEGORY_PLACEHOLDERS = ", ".join("?" for _ in REAL_CATEGORIES)
+
 
 @tool
 def get_all_ordered_products_names(user_id: int, category: str | None = None) -> list[str]:
@@ -116,10 +128,13 @@ def get_all_product_names(page: int = 1, category: str | None = None) -> dict:
             (category, offset, PAGE_SIZE + 1),
         )
     else:
+        # Leftover test categories are excluded - see REAL_CATEGORIES above.
         rows = fetch_all(
-            "SELECT Name FROM Products "
-            "ORDER BY Name OFFSET ? ROWS FETCH NEXT ? ROWS ONLY",
-            (offset, PAGE_SIZE + 1),
+            "SELECT p.Name FROM Products p "
+            "JOIN Categories c ON c.Id = p.CategoryId "
+            f"WHERE c.Name IN ({_REAL_CATEGORY_PLACEHOLDERS}) "
+            "ORDER BY p.Name OFFSET ? ROWS FETCH NEXT ? ROWS ONLY",
+            (*REAL_CATEGORIES, offset, PAGE_SIZE + 1),
         )
     has_more = len(rows) > PAGE_SIZE
     return {"items": [r[0] for r in rows[:PAGE_SIZE]], "page": page, "has_more": has_more}
