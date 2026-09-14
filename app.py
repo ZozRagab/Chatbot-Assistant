@@ -9,6 +9,8 @@ from schemas import QuestionRequest, AnswerResponse, TerminationRequest, Termina
 from agent_graph import graph, summarize_chat
 from checkpoint_db import describe_target, get_checkpoint_db_url
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 
 # psycopg's async mode requires a SelectorEventLoop, but Windows defaults the
 # main thread to ProactorEventLoop - which raises psycopg.InterfaceError the
@@ -28,16 +30,34 @@ fast_llm = ChatGoogleGenerativeAI(model="gemma-4-26b-a4b-it", temperature=0)
 # ============================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # The chat-persistence database (RDS in deployment). Separate from the
+    # The chat-persistence database (Neon in deployment). Separate from the
     # backend SQL Server the store tools read - see checkpoint_db.py.
     print(f"[startup] chat persistence -> {describe_target()}")
-    checkpointer_cm = AsyncPostgresSaver.from_conn_string(get_checkpoint_db_url())
-    checkpointer = await checkpointer_cm.__aenter__()
+
+    # A POOL, not a single connection. Neon suspends an idle database after a
+    # few minutes; a long-lived connection held open across that suspend comes
+    # back dead and the next request fails. `check` validates a connection
+    # before handing it out, so a stale one is discarded and replaced
+    # transparently instead of surfacing as an error to a customer.
+    pool = AsyncConnectionPool(
+        conninfo=get_checkpoint_db_url(),
+        min_size=1,
+        max_size=5,
+        open=False,
+        check=AsyncConnectionPool.check_connection,
+        # Required by AsyncPostgresSaver: it manages its own transactions and
+        # expects rows back as dicts.
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+    )
+    await pool.open(wait=True)
+
+    checkpointer = AsyncPostgresSaver(pool)
     # Creates the checkpoint_* tables on first run if they don't exist yet,
-    # so a fresh RDS instance needs no manual schema setup.
+    # so a fresh Neon database needs no manual schema setup.
     await checkpointer.setup()
 
     app.state.checkpointer = checkpointer
+    app.state.checkpoint_pool = pool
     app.state.compiled_graph = graph.compile(checkpointer=checkpointer)
 
     # Warm the SQL sub-agent at startup. sql_agent_tool imports sql_ReAct
@@ -55,7 +75,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    await checkpointer_cm.__aexit__(None, None, None)
+    await pool.close()
 
 
 app = FastAPI(title="Grocery Ecommerce RAG Assistant", lifespan=lifespan)
