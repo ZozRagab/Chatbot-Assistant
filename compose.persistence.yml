@@ -1,0 +1,14 @@
+# Overlay for the existing AWS deployment's docker-compose.yml.
+# Both containers run on the same EC2 instance; no RDS or Neon is needed.
+services:
+  chatbot-assistant:
+    environment:
+      # Clear a Neon URL from env_file: URL takes precedence over the parts.
+      CHECKPOINT_DB_URL: ""
+      CHECKPOINT_DB_HOST: chatbot-postgres
+      CHECKPOINT_DB_PORT: "5432"
+      CHECKPOINT_DB_NAME: ${DATABASE_NAME:?Set DATABASE_NAME}
+      CHECKPOINT_DB_USER: ${DATABASE_USERNAME:?Set DATABASE_USERNAME}
+      CHECKPOINT_DB_PASSWORD: ${DATABASE_PASSWORD:?Set DATABASE_PASSWORD}
+      # Private Docker network on this host; Postgres has no TLS configured.
+      CHECKPOINT_DB_SSLMODE: disable

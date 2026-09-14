@@ -30,13 +30,16 @@ fast_llm = ChatGoogleGenerativeAI(model="gemma-4-26b-a4b-it", temperature=0)
 # ============================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # The chat-persistence database (Neon in deployment). Separate from the
-    # backend SQL Server the store tools read - see checkpoint_db.py.
+    # The chat-persistence database: Postgres running on this same server,
+    # deliberately NOT a separate managed service (RDS/Neon) - avoids the
+    # extra network hop to an external DB on every checkpoint read/write.
+    # Separate from the backend SQL Server the store tools read - see
+    # checkpoint_db.py.
     print(f"[startup] chat persistence -> {describe_target()}")
 
-    # A POOL, not a single connection. Neon suspends an idle database after a
-    # few minutes; a long-lived connection held open across that suspend comes
-    # back dead and the next request fails. `check` validates a connection
+    # A POOL, not a single connection. Even talking to Postgres on localhost,
+    # a connection can go stale (a Postgres restart, an OOM kill, `systemctl
+    # restart postgresql` during maintenance). `check` validates a connection
     # before handing it out, so a stale one is discarded and replaced
     # transparently instead of surfacing as an error to a customer.
     pool = AsyncConnectionPool(
@@ -53,7 +56,7 @@ async def lifespan(app: FastAPI):
 
     checkpointer = AsyncPostgresSaver(pool)
     # Creates the checkpoint_* tables on first run if they don't exist yet,
-    # so a fresh Neon database needs no manual schema setup.
+    # so a fresh PostgreSQL database needs no manual schema setup.
     await checkpointer.setup()
 
     app.state.checkpointer = checkpointer

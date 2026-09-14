@@ -1,4 +1,4 @@
-"""Connection URL for the chat-persistence database (PostgreSQL / Amazon RDS).
+"""Connection URL for the chat-persistence database (PostgreSQL).
 
 This database stores ONLY LangGraph's conversation checkpoints - the four
 checkpoint_* tables that let a customer's chat survive a restart. It is
@@ -6,16 +6,25 @@ deliberately separate from the store's business data, which lives on the
 backend team's SQL Server and is reached through db.py. Nothing here should
 ever point at that server, and nothing in db.py should ever point at this one.
 
+Deployment target: Postgres running on the SAME server as the app (installed
+directly, not a managed service like RDS/Neon) - chosen to avoid the extra
+network hop to an external database on every checkpoint read/write. That
+means the deployed value of CHECKPOINT_DB_HOST is normally "localhost", same
+as local development - there is no separate "prod" host to configure. A
+managed/remote Postgres still works if the project ever needs one; nothing
+below assumes local-only.
+
 Configuration, in order of precedence:
 
-  1. CHECKPOINT_DB_URL  - a full postgresql:// URL. Simplest for RDS, which
-                          hands you an endpoint you can paste straight in.
+  1. CHECKPOINT_DB_URL  - a full postgresql:// URL, for a remote host that
+                          hands you one directly (e.g. a managed provider).
   2. CHECKPOINT_DB_HOST / _PORT / _NAME / _USER / _PASSWORD  - discrete parts.
   3. DATABASE_HOSTNAME / _PORT / _NAME / _USERNAME / _PASSWORD  - the legacy
      local-development names, kept so an existing .env keeps working.
 
-TLS: any host that is not local defaults to sslmode=require, because RDS
-connections must not be made in the clear. Override with CHECKPOINT_DB_SSLMODE.
+TLS: defaults to sslmode=require for any non-local host, sslmode=prefer for
+localhost (the normal case here, no TLS setup needed on the same box).
+Override with CHECKPOINT_DB_SSLMODE.
 """
 import os
 from urllib.parse import quote_plus
@@ -62,7 +71,7 @@ def get_checkpoint_db_url() -> str:
     if not url:
         raise RuntimeError(
             "Chat-persistence database is not configured. Set CHECKPOINT_DB_URL "
-            "to the RDS endpoint, or CHECKPOINT_DB_HOST/_PORT/_NAME/_USER/"
+            "to PostgreSQL, or CHECKPOINT_DB_HOST/_PORT/_NAME/_USER/"
             "_PASSWORD. (This is the PostgreSQL checkpoint store - not the "
             "backend SQL Server, which is configured separately via MSSQL_*.)"
         )

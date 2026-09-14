@@ -5,46 +5,33 @@ stop the app or silently break a feature if skipped.
 
 ---
 
-## 1. Chat-persistence database (Neon)
+## 1. Chat persistence on the AWS app server
 
-Conversation history lives in PostgreSQL, hosted on [Neon](https://neon.tech)
-- serverless Postgres, free tier, no credit card, no VPC or networking setup.
+The existing EC2 deployment runs PostgreSQL 16 in `chatbot-postgres`, beside
+`chatbot-assistant`. Data is stored in the Docker volume
+`chatbot-assistant_chatbot-postgres-data`. Port 5432 is not published.
+Both containers restart automatically unless explicitly stopped.
 
-**One-time setup:**
+Use the existing server directory `/opt/ai-services/chatbot-assistant`.
+The checked-in `compose.persistence.yml` records the persistence settings.
+Install its contents as `docker-compose.override.yml` in that directory so
+ordinary `docker compose up -d` also applies them. If an override already exists,
+merge the settings instead of overwriting it.
 
-1. Create a Neon account and a project (any region close to where the app
-   runs).
-2. Copy the connection string Neon shows you. It looks like:
-   `postgresql://USER:PASSWORD@ep-xxx-xxx.REGION.aws.neon.tech/neondb?sslmode=require`
-3. Put it in `.env` (and in whatever the deployed instance uses for
-   environment variables):
+The override clears `CHECKPOINT_DB_URL` (which otherwise wins over all other
+settings), uses `chatbot-postgres:5432`, and reuses the existing database
+credentials from the server's `.env`. TLS is disabled only on the private
+Docker network. `localhost` inside the app container would refer to the app
+container itself, not the PostgreSQL container.
 
-   ```
-   CHECKPOINT_DB_URL=postgresql://USER:PASSWORD@ep-xxx.REGION.aws.neon.tech/neondb?sslmode=require
-   ```
+Run `python setup_checkpoint_db.py` inside the app container after deploying
+the current source. It idempotently creates/verifies `checkpoints`,
+`checkpoint_blobs`, `checkpoint_writes`, and `checkpoint_migrations`.
+Keep the connection pool: it recovers from stale connections after DB restarts.
 
-4. Create the tables:
-
-   ```bash
-   python setup_checkpoint_db.py
-   ```
-
-   Expected output ends with `[ok] chat persistence is ready.` and lists the
-   four tables: `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`,
-   `checkpoint_migrations`.
-
-That is the whole database setup. The app also calls `setup()` itself on
-startup, so this script is really a way to verify the connection before
-deploying.
-
-**Why the app uses a connection pool:** Neon suspends an idle database after a
-few minutes. A single long-lived connection held across that suspend comes
-back dead. `app.py` uses `AsyncConnectionPool` with a `check` callback, which
-validates a connection before use and silently replaces a stale one. Do not
-"simplify" this back to a single connection.
-
-**Free-tier note:** a suspended database takes roughly half a second to wake
-on the first query. Subsequent requests are normal speed.
+Never run `docker compose down -v`: that removes the persistent database volume.
+Back up with `pg_dump` before migration. Neon and AWS may contain different chat
+histories; do not restore one over the other without a deliberate migration.
 
 ---
 
@@ -97,7 +84,6 @@ HuggingFace (~90 MB), so the instance needs outbound internet for that.
 
 | Destination | Port | Used for |
 |---|---|---|
-| `*.neon.tech` | 5432 | chat persistence |
 | `63.183.213.35` (backend SQL Server) | 1433 | products, orders, cart |
 | `generativelanguage.googleapis.com` | 443 | Gemini |
 | `api.deepseek.com` | 443 | DeepSeek (SQL fallbacks) |
@@ -123,7 +109,9 @@ keys), so it does **not** arrive with the code. See `.env.example` for the
 full list. Minimum for the app to start:
 
 ```
-CHECKPOINT_DB_URL=postgresql://...neon.tech/neondb?sslmode=require
+CHECKPOINT_DB_HOST=chatbot-postgres
+CHECKPOINT_DB_SSLMODE=disable
+# Remaining CHECKPOINT_DB_* values are supplied by the Compose override.
 MSSQL_SERVER=63.183.213.35,1433
 MSSQL_DATABASE=EcommerceDB
 MSSQL_USER=...
@@ -143,11 +131,11 @@ Postgres.
 Startup prints the persistence target:
 
 ```
-[startup] chat persistence -> ep-xxx.REGION.aws.neon.tech:5432/neondb
+[startup] chat persistence -> chatbot-postgres:5432/ecommerce_rag
 ```
 
-If that line says `localhost`, the environment is still pointing at the wrong
-database.
+For this Docker deployment the target must be `chatbot-postgres`, not Neon or
+`localhost`.
 
 Then smoke-test both answer paths and persistence:
 
