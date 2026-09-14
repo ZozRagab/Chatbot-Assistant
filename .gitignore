@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 chroma_data/
 .vscode/
+# One-off dump of retired local-Postgres business tables - contains seed user rows
+local_pg_business_tables_backup.json

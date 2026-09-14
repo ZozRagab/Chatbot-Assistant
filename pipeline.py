@@ -29,7 +29,7 @@ retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 # ============================================
 # LLM (Gemini 2.5 Flash - used for query generation and final answer)
 # ============================================
-llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", temperature=0)
+llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
 
 # ============================================
 # RAG-FUSION: query variant generation

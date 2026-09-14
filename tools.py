@@ -79,11 +79,12 @@ def general_sql_lookup(question: str, resolved_product_names: list[str] | None =
     """LAST RESORT for a general, store-wide question (products, categories,
     reviews by product) not tied to any user - use only if no
     dedicated general tool fits (see system prompt for the list). Writes
-    and runs SQL on the fly; mainly for open-ended list/aggregate questions
-    that don't match a dedicated tool, e.g. 'list all products'.
+    and runs SQL on the fly; for open-ended aggregate questions that
+    genuinely need custom SQL (e.g. "which category has the most reviews").
 
-    NOT for "what products are in category X" - resolve those with
-    get_all_product_names(category=...) and a dedicated tool instead.
+    NOT for listing products: "list all products" or "what do you sell" is
+    get_all_product_names(page=1) directly; "what products are in category
+    X" is get_all_product_names(category=...) - both faster, dedicated tools.
 
     Paginated, 50/page - check has_more, call ONCE per question, and tell
     the customer if more results exist rather than auto-fetching more.

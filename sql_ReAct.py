@@ -59,7 +59,6 @@ tools = [
     user_order_lookup,
     general_sql_lookup,
 ]
-fast_llm = ChatGoogleGenerativeAI(model="gemma-4-26b-a4b-it", temperature=0).bind_tools(tools)
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.1-flash-lite",
     temperature=0,
@@ -92,13 +91,19 @@ General/store-wide (never tied to one user):
 - get_best_selling_products(limit) - top sellers
 - get_top_rated_products(limit) - highest rated
 - get_product_reviews - public reviews for named product(s)
+- get_all_product_names(page=1) - the FULL catalog listing. Use this
+  DIRECTLY, with no category, for "what do you sell", "list all products",
+  or any other broad "show me everything" question - just return the names
+  it gives you. Do NOT reach for general_sql_lookup for this; that fallback
+  is slower (writes SQL from scratch) and this tool already does it exactly.
 
 There is NO voucher/promo-code tool - vouchers are not in the database.
 Voucher questions are policy questions; say you can't look up codes and
 leave the policy side to the FAQ.
 
-Resolution helpers (see next section): get_all_product_names,
-get_all_ordered_products_names.
+get_all_product_names doubles as a resolution helper too (see next section)
+when the customer named a specific product/category rather than asking for
+everything. get_all_ordered_products_names is resolution-only, for "my X".
 
 Fallback ONLY if nothing above fits (these write SQL on the fly):
 - user_order_lookup - other personal questions

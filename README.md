@@ -148,10 +148,29 @@ LANGSMITH_API_KEY=
 LANGSMITH_PROJECT=
 ```
 
-The same `DATABASE_*` variables are used both for the application's own
-relational schema (`models.py`) and for the LangGraph Postgres checkpointer
-(`agent_graph.py`), so they must point at a database the app can create
-tables in.
+LangGraph uses `CHECKPOINT_DB_URL` when set, otherwise it falls back to
+`DATABASE_*`. The application's relational schema still uses `DATABASE_*`.
+
+On EC2, the deployed app uses `chatbot-postgres:5432/ecommerce_rag` on its
+Docker network. PostgreSQL stores its data in a Docker volume on that server.
+For local development against those same checkpoint tables, configure
+`EC2_HOST`, `EC2_USER`, and `EC2_KEY_PATH` in `.env`, and set
+`CHECKPOINT_DB_URL=postgresql://USER:PASSWORD@127.0.0.1:15432/ecommerce_rag`
+using the EC2 PostgreSQL credentials (URL-encode the username and password).
+Start the tunnel in a separate terminal before starting the app:
+
+```powershell
+.\venv\Scripts\python.exe checkpoint_tunnel.py
+```
+
+Keep that terminal running. `CHECKPOINT_TUNNEL_PORT` optionally overrides
+15432; update the URL to match. The tunnel uses the existing SSH known-host
+entry and does not expose PostgreSQL publicly. When deploying to EC2, omit
+the local `CHECKPOINT_DB_URL` override and use the container's `DATABASE_*`
+settings. Do not copy the local `.env` to the server.
+
+Local and deployed apps now share conversation state for matching user IDs.
+Calling `/terminate` deletes that user's checkpoints from the shared database.
 
 ### 3. Create the database schema
 ```bash
