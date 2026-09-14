@@ -2,7 +2,7 @@ import re
 from typing import Annotated, Sequence, TypedDict
 from langchain_core.messages.utils import count_tokens_approximately
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage, SystemMessage, RemoveMessage, HumanMessage
+from langchain_core.messages import BaseMessage, ToolMessage, SystemMessage, RemoveMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, END, START
@@ -19,9 +19,10 @@ from pydantic import Field
 
 load_dotenv()
 
-# NOTE: the chat-persistence database URL lives in checkpoint_db.py and is
-# used only by app.py, which owns the checkpointer. This module builds the
-# graph; it does not connect to any database itself.
+DB_URI = (
+    f"postgresql://{os.getenv('DATABASE_USERNAME')}:{os.getenv('DATABASE_PASSWORD')}"
+    f"@{os.getenv('DATABASE_HOSTNAME')}:{os.getenv('DATABASE_PORT')}/{os.getenv('DATABASE_NAME')}"
+)
 
 
 class AgentState(TypedDict):
@@ -260,72 +261,9 @@ def should_continue(state: AgentState):
     return "continue" if last_message.tool_calls else "end"
 
 
-def after_tools(state: AgentState):
-    """Decide whether the outer model needs to speak again after a tool ran.
-
-    Skipping it saves a full LLM round trip (~1s of a ~3-4s request), because
-    sql_agent_tool is itself an agent that already wrote a customer-ready
-    answer. But it is only safe when that answer is the WHOLE answer.
-
-    Two conditions, both required:
-
-    1. sql_agent_tool was the only tool called. Anything else - a policy
-       answer, or a turn that called both tools - needs the outer model to
-       frame or combine the results.
-
-    2. The turn skipped the policy prefetch (i.e. it was a personal-account
-       question). This is the subtle one. When prefetch DID inject policy
-       excerpts, the model can answer a two-part question - "is my last order
-       refundable, and what's your refund policy?" - by calling only
-       sql_agent_tool for the order half and intending to cover the policy
-       half itself from the prefetched context. Passing the tool output
-       straight through then silently drops that second half. Measured: the
-       answer came back as "you haven't placed any orders yet" with no mention
-       of the refund policy at all.
-
-    Costs no extra LLM call: it re-reads the tool calls the model already made
-    and re-runs the same cheap regex the Agent node used.
-    """
-    ai = next(
-        (m for m in reversed(state["messages"]) if getattr(m, "tool_calls", None)),
-        None,
-    )
-    if ai is None:
-        return "synthesize"
-
-    if [tc["name"] for tc in ai.tool_calls] != ["sql_agent_tool"]:
-        return "synthesize"
-
-    # reversed(): with the checkpointer, state["messages"] is the whole thread
-    # history, so the newest human message is the current turn's question -
-    # iterating forwards would test turn 1's question forever.
-    question = next(
-        (m.content for m in reversed(state["messages"])
-         if isinstance(m, HumanMessage) or getattr(m, "type", None) == "human"),
-        None,
-    )
-    # Mirrors the Agent node's prefetch decision exactly: prefetch skipped
-    # means there is no policy context in play, so the tool answer stands alone.
-    if question and _is_personal_account_question(str(question)):
-        return "passthrough"
-    return "synthesize"
-
-
-def passthrough(state: AgentState):
-    """Promote the sub-agent's answer to the final assistant message without
-    an LLM call. Re-emitting it as an AIMessage (rather than leaving the
-    ToolMessage last) keeps the saved history well-formed - tool call, tool
-    result, assistant reply - which the checkpointer replays on later turns."""
-    return {"messages": [AIMessage(content=state["messages"][-1].content)]}
-
-
 graph = StateGraph(AgentState)
 graph.add_node("ReAct_agent", Agent)
 graph.add_node("tools", ToolNode(tools))
-graph.add_node("passthrough", passthrough)
 graph.add_edge(START, "ReAct_agent")
 graph.add_conditional_edges("ReAct_agent", should_continue, {"continue": "tools", "end": END})
-graph.add_conditional_edges(
-    "tools", after_tools, {"synthesize": "ReAct_agent", "passthrough": "passthrough"}
-)
-graph.add_edge("passthrough", END)
+graph.add_edge("tools", "ReAct_agent")

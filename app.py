@@ -6,11 +6,8 @@ from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from session_insights import get_suggested_product_ids
 from schemas import QuestionRequest, AnswerResponse, TerminationRequest, TerminationResponse
-from agent_graph import graph, summarize_chat
-from checkpoint_db import describe_target, get_checkpoint_db_url
+from agent_graph import graph, DB_URI, summarize_chat
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from psycopg.rows import dict_row
-from psycopg_pool import AsyncConnectionPool
 
 # psycopg's async mode requires a SelectorEventLoop, but Windows defaults the
 # main thread to ProactorEventLoop - which raises psycopg.InterfaceError the
@@ -30,37 +27,11 @@ fast_llm = ChatGoogleGenerativeAI(model="gemma-4-26b-a4b-it", temperature=0)
 # ============================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # The chat-persistence database: Postgres running on this same server,
-    # deliberately NOT a separate managed service (RDS/Neon) - avoids the
-    # extra network hop to an external DB on every checkpoint read/write.
-    # Separate from the backend SQL Server the store tools read - see
-    # checkpoint_db.py.
-    print(f"[startup] chat persistence -> {describe_target()}")
-
-    # A POOL, not a single connection. Even talking to Postgres on localhost,
-    # a connection can go stale (a Postgres restart, an OOM kill, `systemctl
-    # restart postgresql` during maintenance). `check` validates a connection
-    # before handing it out, so a stale one is discarded and replaced
-    # transparently instead of surfacing as an error to a customer.
-    pool = AsyncConnectionPool(
-        conninfo=get_checkpoint_db_url(),
-        min_size=1,
-        max_size=5,
-        open=False,
-        check=AsyncConnectionPool.check_connection,
-        # Required by AsyncPostgresSaver: it manages its own transactions and
-        # expects rows back as dicts.
-        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
-    )
-    await pool.open(wait=True)
-
-    checkpointer = AsyncPostgresSaver(pool)
-    # Creates the checkpoint_* tables on first run if they don't exist yet,
-    # so a fresh PostgreSQL database needs no manual schema setup.
+    checkpointer_cm = AsyncPostgresSaver.from_conn_string(DB_URI)
+    checkpointer = await checkpointer_cm.__aenter__()
     await checkpointer.setup()
 
     app.state.checkpointer = checkpointer
-    app.state.checkpoint_pool = pool
     app.state.compiled_graph = graph.compile(checkpointer=checkpointer)
 
     # Warm the SQL sub-agent at startup. sql_agent_tool imports sql_ReAct
@@ -78,7 +49,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    await pool.close()
+    await checkpointer_cm.__aexit__(None, None, None)
 
 
 app = FastAPI(title="Grocery Ecommerce RAG Assistant", lifespan=lifespan)
