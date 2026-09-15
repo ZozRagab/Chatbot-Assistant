@@ -1,5 +1,4 @@
 from langchain_core.tools import tool
-from langchain_core.runnables import RunnableConfig
 from db import connection, fetch_all, fetch_on, placeholders
 from A_C_rag import adaptive_corrective_answer
 from text_to_sql import answer_sql_specific_question, answer_sql_general_question
@@ -369,27 +368,6 @@ def get_product_reviews(resolved_product_names: list[str], page: int = 1) -> dic
 # table (vouchers are not being implemented), so there is nothing to query.
 # The store's voucher POLICY text still lives in the FAQ/vector store and is
 # answered by search_policies_and_faqs, not from the database.
-
-
-@tool
-async def sql_agent_tool(question: str, config: RunnableConfig) -> str:
-    """Delegate a question about products, orders, cart, stock, prices, or
-    reviews to the specialized SQL data agent. Use this for
-    ANY question requiring structured store/order data - it handles product
-    name resolution and pagination internally and returns one final answer.
-    Do NOT use this for policy/FAQ/general knowledge questions."""
-    from sql_ReAct import c_graph as compiled_graph
-    user_id = config["configurable"]["user_id"]
-
-    sub_config = {"configurable": {"user_id": user_id}}
-
-    result = await compiled_graph.ainvoke(
-        {"messages": [{"role": "user", "content": question}]},
-        config=sub_config
-    )
-    # .text (not .content) - this tool is typed to return str, but a Gemini
-    # sub-agent llm returns content as a list of blocks, not a plain string.
-    return result["messages"][-1].text
 
 
 @tool

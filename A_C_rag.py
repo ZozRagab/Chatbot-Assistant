@@ -2,7 +2,6 @@
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_deepseek import ChatDeepSeek
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pipeline import (
     fusion_retrieval_chain,
@@ -12,11 +11,13 @@ from pipeline import (
 
 load_dotenv()
 
-# Stronger model - used for classification (routing decision matters)
-llm = ChatDeepSeek(
-    model="deepseek-v4-flash",
+# Used for classification (routing decision matters). Was DeepSeek
+# (deepseek-v4-flash); swapped to Gemini after the DeepSeek endpoint started
+# hanging indefinitely. Explicit timeout so it fails fast rather than stalling.
+llm = ChatGoogleGenerativeAI(
+    model="gemini-3.1-flash-lite",
     temperature=0,
-    extra_body={"thinking": {"type": "disabled"}}
+    timeout=30,
 )
 small_llm = ChatGoogleGenerativeAI(model="gemma-4-26b-a4b-it", temperature=0)
 # Fast model for cheap steps: grading and rewriting

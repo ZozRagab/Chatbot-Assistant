@@ -2,13 +2,18 @@ import re
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_deepseek import ChatDeepSeek
+from langchain_google_genai import ChatGoogleGenerativeAI
 from db import connection
 load_dotenv()
 
-llm = ChatDeepSeek(
-    model="deepseek-chat",
-    temperature=0
+# Was DeepSeek (deepseek-chat). Swapped to Gemini: the DeepSeek endpoint became
+# unresponsive - even a one-word prompt hung past 40s - which stalled every
+# fallback SQL question behind it. `timeout` is set explicitly so an
+# unresponsive provider fails fast instead of hanging the request forever.
+llm = ChatGoogleGenerativeAI(
+    model="gemini-3.1-flash-lite",
+    temperature=0,
+    timeout=30,
 )
 
 # ============================================
